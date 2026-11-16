@@ -381,3 +381,17 @@ a.np-card:hover .np-card-title { color: var(--primary); }
 .np-svg .np-switch { stroke: var(--text-muted); stroke-width: 3; stroke-linecap: round; transition: transform 0.15s; }
 .np-svg .np-switch.is-down { stroke: var(--primary); }
 .np-svg .np-ext { transition: opacity 0.25s; }
+/* Giản đồ thời gian (kiểu GTKWave) */
+.np-svg .np-scopebox { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.2; }
+.np-svg .np-grid { stroke: var(--border-strong); stroke-width: 1; }
+.np-svg .np-thr { stroke: var(--text-faint); stroke-width: 1; stroke-dasharray: 4 4; }
+.np-svg .np-band { fill: var(--text-faint); opacity: 0.13; }
+.np-svg .np-trace-v { fill: none; stroke: var(--np-data); stroke-width: 2.2; stroke-linejoin: round; }
+.np-svg .np-trace-d { fill: none; stroke: var(--np-miso); stroke-width: 2.2; stroke-linejoin: round; }
+.np-svg .np-noise { fill: none; stroke: var(--rose); stroke-width: 1.6; stroke-linecap: round; }
+.np-svg .np-t-big { fill: var(--text); font-size: 15px; }
+/* Thanh trượt (vd. giá trị điện trở) */
+.np-range { display: inline-flex; align-items: center; gap: 0.55rem; min-height: 40px; color: var(--text-muted); font: 600 0.82rem/1 var(--mono); }
+.np-range input { width: 170px; accent-color: var(--primary); }
+.np-range output { min-width: 4.8em; color: var(--primary); }
+.np-range.is-disabled { opacity: 0.45; }

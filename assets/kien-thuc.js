@@ -342,8 +342,248 @@
     return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
   }
 
+  /* =========================================================
+     SƠ ĐỒ 2 — PULL-UP / PULL-DOWN: so sánh 3 cách nối nút nhấn + giản đồ điện áp và giá trị đọc được
+     ========================================================= */
+  function mountPull(host) {
+    var zig = function (x, y) { return 'M' + x + ' ' + y + ' l9 4.5 l-18 9 l18 9 l-18 9 l18 9 l-18 9 l9 4.5'; };
+    var N = 133, X0 = 476;                                       // số mẫu trên giản đồ, mép trái vùng vẽ
+    var vy = function (v) { return 236 - v * (150 / 3.3); };      // điện áp → toạ độ y
+    var dy = function (b) { return b ? 290 : 320; };              // bit đọc được → toạ độ y
+    host.insertAdjacentHTML('beforeend',
+      '<div class="np-stage"><svg class="np-svg" viewBox="0 0 760 420" role="img" aria-label="So sánh chân không có điện trở, có pull-up và có pull-down, kèm giản đồ điện áp trên chân và giá trị chip đọc được">' +
+        // ray nguồn & đất
+        '<line class="np-vcc" x1="160" y1="50" x2="380" y2="50"/><text class="np-vcc-t" x="380" y="40" text-anchor="end">3.3 V</text>' +
+        '<line class="np-gnd" x1="160" y1="330" x2="380" y2="330"/><text class="np-gnd-t" x="380" y="352" text-anchor="end">GND</text>' +
+        // vi điều khiển + bộ đệm vào + chân
+        '<rect class="np-box-r" x="20" y="140" width="150" height="110" rx="12"/><text class="np-t-dim" x="34" y="162">MCU</text>' +
+        '<polygon class="np-buf is-on" points="140,180 140,210 112,195"/><path class="np-wire" d="M164 195 H140"/>' +
+        '<text class="np-t-strong" data-val="inbox" x="34" y="200"></text><text class="np-t-dim" x="34" y="226">giá trị đọc</text>' +
+        '<rect class="np-pad" x="164" y="180" width="22" height="30" rx="4"/><text class="np-t-strong" x="175" y="172" text-anchor="middle">CHÂN</text>' +
+        '<path class="np-wire" d="M186 195 H240"/><circle class="np-node" cx="240" cy="195" r="4.5"/>' +
+        // khe trên (giữa 3.3 V và chân): điện trở kéo lên HOẶC nút nối lên 3.3 V
+        '<g data-el="upw"><line class="np-wire" x1="240" y1="50" x2="240" y2="72"/><line class="np-wire" x1="240" y1="126" x2="240" y2="195"/></g>' +
+        '<g data-el="rup"><path class="np-res" d="' + zig(240, 72) + '"/><text x="258" y="94">R</text><text class="np-t-val" data-val="rup" x="258" y="112"></text></g>' +
+        '<g data-el="bup"><circle class="np-node" cx="240" cy="78" r="3.5"/><circle class="np-node" cx="240" cy="120" r="3.5"/>' +
+          '<line class="np-switch" data-sw="up" x1="240" y1="78" x2="262" y2="114"/><text x="270" y="104">nút</text></g>' +
+        '<text class="np-t-dim" data-el="nup" x="252" y="122">(không có điện trở)</text>' +
+        // khe dưới (giữa chân và GND): nút nối xuống GND HOẶC điện trở kéo xuống
+        '<line class="np-wire" x1="240" y1="195" x2="240" y2="222"/><line class="np-wire" x1="240" y1="276" x2="240" y2="330"/>' +
+        '<g data-el="blow"><circle class="np-node" cx="240" cy="228" r="3.5"/><circle class="np-node" cx="240" cy="270" r="3.5"/>' +
+          '<line class="np-switch" data-sw="low" x1="240" y1="228" x2="262" y2="264"/><text x="270" y="254">nút</text></g>' +
+        '<g data-el="rlow"><path class="np-res" d="' + zig(240, 222) + '"/><text x="258" y="244">R</text><text class="np-t-val" data-val="rlow" x="258" y="262"></text></g>' +
+        // nhiễu môi trường (chỉ hiện khi chân lơ lửng)
+        '<g data-el="noise"><path class="np-noise" d="M266 168 q6 -9 12 0 t12 0 t12 0"/><path class="np-noise" d="M272 182 q6 -9 12 0 t12 0 t12 0"/>' +
+          '<text x="312" y="176" style="fill:var(--rose)">nhiễu</text></g>' +
+        // số đo
+        '<text class="np-t-strong" data-val="rinfo" x="20" y="380"></text><text data-val="iinfo" x="20" y="404"></text>' +
+        // giản đồ thời gian kiểu GTKWave
+        '<rect class="np-scopebox" x="410" y="24" width="340" height="350" rx="10"/><text class="np-t-dim" x="424" y="48">GIẢN ĐỒ THỜI GIAN</text>' +
+        '<rect class="np-band" x="' + X0 + '" y="' + vy(2.5) + '" width="264" height="' + (vy(0.8) - vy(2.5)) + '"/>' +
+        '<line class="np-grid" x1="' + X0 + '" y1="' + vy(3.3) + '" x2="740" y2="' + vy(3.3) + '"/><line class="np-grid" x1="' + X0 + '" y1="' + vy(0) + '" x2="740" y2="' + vy(0) + '"/>' +
+        '<line class="np-thr" x1="' + X0 + '" y1="' + vy(2.5) + '" x2="740" y2="' + vy(2.5) + '"/><line class="np-thr" x1="' + X0 + '" y1="' + vy(0.8) + '" x2="740" y2="' + vy(0.8) + '"/>' +
+        '<text class="np-t-dim" x="470" y="' + (vy(3.3) + 4) + '" text-anchor="end">3.3</text><text class="np-t-dim" x="470" y="' + (vy(2.5) + 4) + '" text-anchor="end">2.5</text>' +
+        '<text class="np-t-dim" x="470" y="' + (vy(0.8) + 4) + '" text-anchor="end">0.8</text><text class="np-t-dim" x="470" y="' + (vy(0) + 4) + '" text-anchor="end">0 V</text>' +
+        '<text class="np-t-dim" x="736" y="' + (vy(1.65) + 4) + '" text-anchor="end">vùng không rõ</text>' +
+        '<text class="np-t-strong" x="424" y="' + (vy(1.65) - 8) + '">V</text><text class="np-t-dim" x="424" y="' + (vy(1.65) + 8) + '">chân</text>' +
+        '<line class="np-thr" x1="' + X0 + '" y1="305" x2="740" y2="305"/><text class="np-t-strong" x="424" y="309">IN</text>' +
+        '<text class="np-t-dim" x="470" y="294" text-anchor="end">1</text><text class="np-t-dim" x="470" y="324" text-anchor="end">0</text>' +
+        '<polyline class="np-trace-v" data-el="tv"/><polyline class="np-trace-d" data-el="td"/>' +
+        '<line class="np-thr" x1="740" y1="70" x2="740" y2="330" style="stroke:var(--primary);stroke-dasharray:none"/>' +
+        '<text class="np-t-big" data-val="read" x="' + X0 + '" y="358"></text>' +
+        // đường dòng điện (ẩn) + chấm sáng
+        '<path data-path="cur" d="M240 50 V330" fill="none" stroke="none"/><g data-el="dots"></g>' +
+      '</svg></div>' +
+      '<div class="np-legend"><span><i style="--c:var(--np-vcc)"></i>3.3 V</span><span><i style="--c:var(--np-gnd)"></i>GND</span>' +
+        '<span><i style="--c:var(--np-data)"></i>điện áp trên chân</span><span><i style="--c:var(--np-miso)"></i>giá trị chip đọc (IN)</span>' +
+        '<span><i class="is-dot" style="--c:var(--primary)"></i>dòng điện</span></div>');
+
+    var svg = host.querySelector('svg');
+    var q = function (sel) { return svg.querySelector(sel); };
+    var dots = [];
+    for (var k = 0; k < 5; k++) {
+      var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('class', 'np-dot'); c.setAttribute('r', '4');
+      q('[data-el="dots"]').appendChild(c); dots.push(c);
+    }
+
+    var tryBox = h('div', 'np-try');
+    tryBox.innerHTML =
+      '<span class="np-try-label">Tự thử</span>' +
+      '<div class="np-seg" role="group" aria-label="Cách nối">' +
+        '<button type="button" class="np-btn" data-cfg="float">Không điện trở</button>' +
+        '<button type="button" class="np-btn" data-cfg="up">Pull-up</button>' +
+        '<button type="button" class="np-btn" data-cfg="down">Pull-down</button></div>' +
+      '<button type="button" class="np-btn np-hold" data-hold>Nhấn giữ nút</button>' +
+      '<label class="np-range"><span>R</span><input type="range" min="0" max="100" step="1" value="50" aria-label="Giá trị điện trở, từ 1 kΩ đến 100 kΩ"><output>10 kΩ</output></label>';
+    var slider = tryBox.querySelector('input'), sliderOut = tryBox.querySelector('output');
+
+    var st = { cfg: 'float', pressed: false, r: 10 };
+    var fmtR = function (r) { return (r < 10 ? r.toFixed(1).replace('.0', '') : Math.round(r)) + ' kΩ'; };
+    var fmtI = function (r) {
+      var mA = 3.3 / r;
+      return mA >= 1 ? mA.toFixed(1) + ' mA' : mA >= 0.1 ? mA.toFixed(2) + ' mA' : Math.round(mA * 1000) + ' µA';
+    };
+    var spring = function (r) { return r <= 4.7 ? 'chắc (tốn dòng)' : r <= 22 ? 'vừa' : 'yếu (tiết kiệm dòng)'; };
+    var rToSlider = function (r) { return Math.round(Math.log(r) / Math.log(100) * 100); };
+
+    function describe(s) {
+      if (s.cfg === 'float') return s.pressed
+        ? 'Không điện trở, đang nhấn: chân nối thẳng xuống GND → đọc 0 ổn định.'
+        : 'Không điện trở, nút nhả: không gì giữ chân — điện áp trôi theo nhiễu, giá trị đọc nhảy 0/1 loạn xạ.';
+      var i = 'I = 3.3 V ÷ ' + fmtR(s.r) + ' ≈ ' + fmtI(s.r);
+      if (s.cfg === 'up') return s.pressed
+        ? 'Pull-up ' + fmtR(s.r) + ', đang nhấn: chân xuống 0 V → đọc 0 (active-low). ' + i + '.'
+        : 'Pull-up ' + fmtR(s.r) + ', nút nhả: điện trở kéo chân lên 3.3 V → đọc 1. Lò xo ' + spring(s.r) + '.';
+      return s.pressed
+        ? 'Pull-down ' + fmtR(s.r) + ', đang nhấn: chân lên 3.3 V → đọc 1 (active-high). ' + i + '.'
+        : 'Pull-down ' + fmtR(s.r) + ', nút nhả: điện trở kéo chân xuống 0 V → đọc 0. Lò xo ' + spring(s.r) + '.';
+    }
+
+    // Mô phỏng điện áp trên chân theo thời gian
+    var floatV = 1.65, nz = 0, simT = 0;
+    function sample(s) {
+      nz += ((Math.random() * 2 - 1) - nz) * 0.4;                     // nhiễu mịn
+      var v;
+      if (s.cfg === 'float' && !s.pressed) {                           // lơ lửng: trôi + “nhiễu lưới điện” (vẽ chậm cho dễ nhìn)
+        floatV += (Math.random() - 0.5) * 0.7 + (1.65 - floatV) * 0.04;
+        v = floatV + 1.15 * Math.sin(simT * 2 * Math.PI * 1.7) + nz * 0.5;
+      } else {
+        var high = s.cfg === 'down' ? s.pressed : (s.cfg === 'up' && !s.pressed);
+        var amp = s.pressed ? 0.03 : 0.04 + 0.5 * Math.pow(Math.log(s.r) / Math.log(10) / 2, 2);   // R càng lớn càng gợn
+        v = high ? 3.3 - Math.abs(nz) * amp : Math.abs(nz) * amp;
+      }
+      v = Math.max(0, Math.min(3.3, v));
+      var bit = v >= 2.5 ? 1 : v <= 0.8 ? 0 : (Math.random() < 0.5 ? 1 : 0);   // vùng không rõ: đọc ra 0 hay 1 tùy may rủi
+      return [v, bit];
+    }
+    var vBuf = [], dBuf = [];
+    function pushSample() {
+      simT += 1 / 40;
+      var smp = sample(st);
+      vBuf.push(smp[0]); dBuf.push(smp[1]);
+      if (vBuf.length > N) { vBuf.shift(); dBuf.shift(); }
+    }
+    function drawTraces() {
+      var pv = [], pd = [], start = N - vBuf.length;
+      for (var j = 0; j < vBuf.length; j++) {
+        var x = X0 + (start + j) * 2;
+        pv.push(x + ',' + vy(vBuf[j]).toFixed(1));
+        if (j) pd.push(x + ',' + dy(dBuf[j - 1]));                     // giữ mức cũ tới mẫu kế → dạng xung vuông
+        pd.push(x + ',' + dy(dBuf[j]));
+      }
+      q('[data-el="tv"]').setAttribute('points', pv.join(' '));
+      q('[data-el="td"]').setAttribute('points', pd.join(' '));
+      var last = dBuf[dBuf.length - 1];
+      q('[data-val="read"]').textContent = 'Chip đọc được: ' + last;
+      q('[data-val="inbox"]').textContent = 'IN = ' + last;
+    }
+
+    var curOn = false, curSpeed = 30;
+    function apply(s) {
+      st.cfg = s.cfg; st.pressed = !!s.pressed; st.r = s.r || st.r;
+      var fl = st.cfg === 'float', up = st.cfg === 'up', down = st.cfg === 'down';
+      q('[data-el="upw"]').style.display = fl ? 'none' : '';
+      q('[data-el="rup"]').style.display = up ? '' : 'none';
+      q('[data-el="bup"]').style.display = down ? '' : 'none';
+      q('[data-el="nup"]').style.display = fl ? '' : 'none';
+      q('[data-el="blow"]').style.display = down ? 'none' : '';
+      q('[data-el="rlow"]').style.display = down ? '' : 'none';
+      q('[data-el="noise"]').style.display = fl && !st.pressed ? '' : 'none';
+      ['up', 'low'].forEach(function (w) {
+        var sw = q('[data-sw="' + w + '"]'), y0 = w === 'up' ? 78 : 228;
+        sw.setAttribute('x2', st.pressed ? '240' : '262');
+        sw.setAttribute('y2', String(y0 + (st.pressed ? 42 : 36)));
+        sw.classList.toggle('is-down', st.pressed);
+      });
+      q('[data-val="rup"]').textContent = fmtR(st.r);
+      q('[data-val="rlow"]').textContent = fmtR(st.r);
+      q('[data-val="rinfo"]').textContent = fl ? 'Không có điện trở kéo' : 'R = ' + fmtR(st.r) + ' · lò xo ' + spring(st.r);
+      q('[data-val="iinfo"]').textContent = fl
+        ? (st.pressed ? 'Đang nhấn: chân nối thẳng GND' : 'Nút nhả: chân lơ lửng, đọc bừa')
+        : st.pressed ? 'Đang nhấn: I = 3.3 V ÷ ' + fmtR(st.r) + ' ≈ ' + fmtI(st.r)
+        : 'Nút nhả: gần như không có dòng';
+      curOn = !fl && st.pressed;
+      curSpeed = 18 + 62 * Math.min(1, (3.3 / st.r) / 3.3);          // dòng càng lớn, chấm chạy càng nhanh
+      // nút "Tự thử"
+      Array.prototype.forEach.call(tryBox.querySelectorAll('[data-cfg]'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.cfg === st.cfg)); });
+      slider.disabled = fl;
+      slider.parentNode.classList.toggle('is-disabled', fl);
+      slider.value = rToSlider(st.r);
+      sliderOut.textContent = fmtR(st.r);
+      if (reduceMotion || !vBuf.length) { vBuf = []; dBuf = []; for (var j = 0; j < N; j++) pushSample(); }   // không chuyển động: vẽ sẵn cả đoạn
+      drawTraces();
+      placeDots(0);
+    }
+
+    var offset = 0;
+    function placeDots(dt) {
+      if (!curOn) { dots.forEach(function (d) { d.style.display = 'none'; }); return; }
+      var p = q('[data-path="cur"]'), L = p.getTotalLength();
+      offset = (offset + dt * curSpeed) % L;
+      dots.forEach(function (d, j) {
+        var pt = p.getPointAtLength((offset + j * L / dots.length) % L);
+        d.style.display = '';
+        d.setAttribute('cx', pt.x.toFixed(1)); d.setAttribute('cy', pt.y.toFixed(1));
+      });
+    }
+    var raf = 0, lastT = 0, acc = 0;
+    function frame(now) {
+      raf = requestAnimationFrame(frame);
+      var dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+      if (reduceMotion || !player.visible()) return;
+      var sp = player.speed();
+      acc += dt * sp;
+      var grew = false;
+      while (acc >= 1 / 40) { pushSample(); acc -= 1 / 40; grew = true; }
+      if (grew) drawTraces();
+      placeDots(dt * sp);
+    }
+
+    var steps = [
+      { state: { cfg: 'float', pressed: false, r: 10 }, text: 'Không có điện trở, nút đang nhả: chân lơ lửng. Điện áp trôi theo nhiễu, giá trị đọc nhảy 0/1 loạn xạ.' },
+      { state: { cfg: 'float', pressed: true, r: 10 }, text: 'Nhấn nút: chân nối thẳng xuống GND → đọc ổn định 0. Rắc rối chỉ xuất hiện lúc nhả.' },
+      { state: { cfg: 'up', pressed: false, r: 10 }, text: 'Thêm điện trở 10 kΩ nối lên 3.3 V (pull-up). Nút nhả: điện trở kéo chân lên 3.3 V → đọc 1 ổn định.' },
+      { state: { cfg: 'up', pressed: true, r: 10 }, text: 'Nhấn nút: chân xuống 0 V → đọc 0 (active-low). Dòng 3.3 V ÷ 10 kΩ ≈ 0.33 mA chạy qua điện trở.' },
+      { state: { cfg: 'down', pressed: false, r: 10 }, text: 'Pull-down: điện trở nối chân xuống GND, nút nối lên 3.3 V. Nút nhả → đọc 0.' },
+      { state: { cfg: 'down', pressed: true, r: 10 }, text: 'Nhấn nút: chân lên 3.3 V → đọc 1 (active-high). Dòng ≈ 0.33 mA chảy qua điện trở xuống GND.' },
+      { state: { cfg: 'up', pressed: false, r: 100 }, text: 'Pull-up 100 kΩ: “lò xo” yếu — điện áp gợn rõ hơn dù vẫn đọc 1. Bù lại, khi nhấn chỉ tốn 33 µA.' },
+      { state: { cfg: 'up', pressed: true, r: 1 }, text: 'Pull-up 1 kΩ: kéo rất chắc, nhưng mỗi lần nhấn tốn tới 3.3 mA — phí pin.' }
+    ];
+    steps.forEach(function (s) { s.dur = 3800; });
+    var player = createPlayer(host, { steps: steps, apply: apply });
+    host.appendChild(tryBox);
+
+    function userSet(patch) {
+      Object.keys(patch).forEach(function (key) { st[key] = patch[key]; });
+      apply({ cfg: st.cfg, pressed: st.pressed, r: st.r });
+      player.manual(describe(st));
+    }
+    tryBox.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-cfg]');
+      if (b) userSet({ cfg: b.dataset.cfg, pressed: false });
+    });
+    slider.addEventListener('input', function () {
+      userSet({ r: Math.pow(100, slider.value / 100) });            // thang logarit: 1 kΩ … 10 kΩ … 100 kΩ
+    });
+    var hold = tryBox.querySelector('[data-hold]');
+    var press = function (down) {
+      if (st.pressed === down) return;
+      hold.classList.toggle('is-down', down);
+      userSet({ pressed: down });
+    };
+    hold.addEventListener('pointerdown', function (e) { e.preventDefault(); press(true); });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { hold.addEventListener(ev, function () { press(false); }); });
+    hold.addEventListener('keydown', function (e) { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); press(true); } });
+    hold.addEventListener('keyup', function (e) { if (e.key === ' ' || e.key === 'Enter') press(false); });
+
+    lastT = performance.now();
+    raf = requestAnimationFrame(frame);
+    return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
+  }
+
   /* Danh sách sơ đồ: tên dùng trong data-np-diagram="…" */
-  var DIAGRAMS = { gpio: mountGpio };
+  var DIAGRAMS = { gpio: mountGpio, pull: mountPull };
 
   /* Ảnh minh họa nhỏ cho thẻ bài lớn ở trang nhất (theo mã bài) */
   var ART = {
@@ -357,7 +597,19 @@
       '<path d="M245 75l7 -9l7 18l7 -18l7 18l7 -18l7 18l4 -9H310" fill="none" stroke="var(--text-muted)" stroke-width="2.5"/>' +
       '<circle cx="335" cy="75" r="22" fill="#facc15" opacity="0.35"/><polygon points="322,62 322,88 344,75" fill="#facc15" stroke="#b45309" stroke-width="2.5"/>' +
       '<path d="M346 62V88" stroke="#b45309" stroke-width="2.5"/><path d="M346 75H392V128" fill="none" stroke="var(--np-gnd)" stroke-width="2.5"/>' +
-      '<path d="M380 128h24M385 134h14M390 140h4" stroke="var(--np-gnd)" stroke-width="2.5"/></svg>'
+      '<path d="M380 128h24M385 134h14M390 140h4" stroke="var(--np-gnd)" stroke-width="2.5"/></svg>',
+    pull: '<svg viewBox="0 0 420 150" role="img" aria-label="Minh họa: điện trở kéo lên giữ chân MCU ở mức 1, nút nhấn nối xuống GND">' +
+      '<path d="M190 16H400" stroke="var(--np-vcc)" stroke-width="3"/><text x="398" y="12" text-anchor="end" fill="var(--np-vcc)" font-family="var(--mono)" font-size="11" font-weight="600">3.3 V</text>' +
+      '<rect x="30" y="40" width="110" height="70" rx="10" fill="var(--scope-bg)"/>' +
+      '<text x="85" y="80" text-anchor="middle" fill="#e6edf3" font-family="var(--mono)" font-size="15" font-weight="600">MCU</text>' +
+      '<path d="M140 75H240" stroke="var(--primary)" stroke-width="3"/><circle cx="240" cy="75" r="4.5" fill="var(--primary)"/>' +
+      '<path d="M240 16V24l9 4.5l-18 9l18 9l-18 9l9 4.5V75" fill="none" stroke="var(--text-muted)" stroke-width="2.5"/>' +
+      '<text x="256" y="48" fill="var(--primary)" font-family="var(--mono)" font-size="12" font-weight="700">PULL-UP 10 kΩ</text>' +
+      '<path d="M240 75V96" stroke="var(--text-muted)" stroke-width="2.5"/><circle cx="240" cy="98" r="3.5" fill="var(--text-muted)"/>' +
+      '<path d="M240 98L262 124" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round"/><circle cx="240" cy="128" r="3.5" fill="var(--text-muted)"/>' +
+      '<path d="M240 128V140M226 140h28M231 146h18" stroke="var(--np-gnd)" stroke-width="2.5"/>' +
+      '<text x="270" y="122" fill="var(--text-muted)" font-family="var(--mono)" font-size="11">nút</text>' +
+      '<text x="190" y="100" text-anchor="end" fill="var(--np-miso)" font-family="var(--mono)" font-size="13" font-weight="700">IN = 1</text></svg>'
   };
 
   /* =========================================================
@@ -405,7 +657,8 @@
 
     // Trang nhất
     var front = h('div', 'np-front');
-    var lead = arts.filter(function (a) { return a.published; })[0] || arts[0];
+    var pubs = arts.filter(function (a) { return a.published; });
+    var lead = pubs[pubs.length - 1] || arts[0];                 // bài mới đăng nhất lên thẻ lớn
     [lead].concat(arts.filter(function (a) { return a !== lead; })).forEach(function (a) {
       var isLead = a === lead;
       var card = h(a.published ? 'a' : 'div', 'np-card' + (isLead ? ' np-card--lead' : '') + (a.published ? '' : ' is-upcoming'));
