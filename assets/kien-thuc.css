@@ -1,0 +1,383 @@
+/* =========================================================
+   TRANG KIẾN THỨC: "tờ báo" (trang nhất + trình đọc bài) và sơ đồ tương tác
+   Chỉ kien-thuc.html tải file này. Mọi class bắt đầu bằng np- để không đụng CSS chung.
+   Màu lấy từ biến của assets/site.css nên tự đổi theo chế độ sáng / tối.
+   ========================================================= */
+.np {
+  --np-serif: "Newsreader", "Lora", Georgia, "Times New Roman", serif;
+  /* Mã màu tín hiệu dùng chung cả chuyên mục (sáng) */
+  --np-clk: #15803d;    /* clock: SCL / SCLK */
+  --np-data: #b7791f;   /* dữ liệu: SDA / MOSI / TX / CAN_H */
+  --np-miso: #2563eb;   /* MISO / RX / CAN_L */
+  --np-cs: #db2777;     /* CS */
+  --np-vcc: #dc2626;    /* nguồn VCC / VDD */
+  --np-gnd: #6b7280;    /* GND */
+  --np-led: #facc15;
+  margin-top: 0.25rem;
+}
+:root[data-theme="dark"] .np {
+  --np-clk: #4ade80; --np-data: #facc15; --np-miso: #60a5fa; --np-cs: #f472b6; --np-vcc: #f87171; --np-gnd: #9ca3af;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .np {
+    --np-clk: #4ade80; --np-data: #facc15; --np-miso: #60a5fa; --np-cs: #f472b6; --np-vcc: #f87171; --np-gnd: #9ca3af;
+  }
+}
+.np [hidden] { display: none !important; }
+
+/* ---------- Tên báo (masthead) ---------- */
+.np-masthead {
+  margin-bottom: 1.5rem;
+  padding: 0.85rem 0 0.75rem;
+  border-top: 4px double var(--text);
+  border-bottom: 1px solid var(--text);
+  text-align: center;
+}
+.np-mast-top,
+.np-mast-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.3rem 1rem;
+  color: var(--text-muted);
+  font: 500 0.72rem/1.5 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.np-mast-title {
+  margin: 0.35rem 0 0.25rem;
+  font-family: var(--np-serif);
+  font-size: clamp(1.9rem, 6.2vw, 3.7rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+}
+.np-mast-title .np-dot { color: var(--primary); }
+.np-mast-sub { font-family: var(--np-serif); font-size: 1.05rem; font-style: italic; color: var(--text-muted); }
+.np-mast-line { justify-content: center; margin-top: 0.7rem; padding-top: 0.45rem; border-top: 1px solid var(--border-strong); }
+.np-mast-line span + span::before { content: "·"; margin-right: 1rem; color: var(--border-strong); }
+
+/* ---------- Trang nhất: 1 thẻ lớn + các thẻ nhỏ ---------- */
+.np-front { display: grid; grid-template-columns: 1fr; border-top: 1px solid var(--text); }
+@media (min-width: 900px) {
+  .np-front { grid-template-columns: 1.15fr 0.85fr 0.85fr; }
+  .np-card--lead { grid-column: span 2; grid-row: span 2; }
+  .np-card { border-right: 1px solid var(--border); }
+  .np-card:nth-child(3), .np-card:nth-child(6) { border-right: 0; }
+}
+.np-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 1.1rem 1.15rem 1.2rem;
+  border-bottom: 1px solid var(--border-strong);
+  color: inherit;
+  text-decoration: none;
+  transition: background-color 0.2s;
+}
+a.np-card:hover { background: var(--surface); }
+a.np-card:hover .np-card-title { color: var(--primary); }
+.np-card-no { display: flex; align-items: center; gap: 0.5rem; color: var(--primary); font: 600 0.74rem/1.4 var(--mono); }
+.np-card-kicker { color: var(--text-faint); font-weight: 500; }
+.np-card-title {
+  font-family: var(--np-serif);
+  font-size: 1.32rem;
+  font-weight: 700;
+  line-height: 1.22;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+  transition: color 0.2s;
+}
+.np-card--lead .np-card-title { font-size: clamp(1.8rem, 3.4vw, 2.7rem); line-height: 1.1; }
+.np-card-sapo {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--np-serif);
+  font-size: 1.03rem;
+  line-height: 1.5;
+}
+.np-card--lead .np-card-sapo { -webkit-line-clamp: 4; font-size: 1.18rem; }
+.np-card-meta { margin-top: auto; padding-top: 0.35rem; color: var(--text-faint); font: 500 0.74rem/1.5 var(--mono); }
+.np-card--lead .np-card-meta { color: var(--primary); font-weight: 600; }
+.np-card.is-upcoming { cursor: default; }
+.np-card.is-upcoming .np-card-title,
+.np-card.is-upcoming .np-card-sapo { opacity: 0.6; }
+.np-soon { padding: 0 0.4rem; border-radius: 4px; background: var(--surface-2); color: var(--text-muted); font: 600 0.68rem/1.6 var(--mono); }
+.np-card-art {
+  margin: 0.4rem 0 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: radial-gradient(var(--dot) 1px, transparent 1.4px) 0 0 / 16px 16px, var(--surface-2);
+}
+.np-card-art svg { display: block; width: 100%; height: auto; }
+
+/* ---------- Trình đọc bài ---------- */
+.np-artnav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.5rem 0 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+.np-artnav--bottom { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); border-bottom: 0; }
+.np-artnav-pn { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.np-navbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 40px;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: 600 0.88rem/1.3 var(--font);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background-color 0.2s;
+}
+.np-navbtn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+.np-navbtn:disabled { cursor: not-allowed; opacity: 0.5; }
+.np-navbtn small { color: var(--text-faint); font-weight: 500; }
+
+.np-article { padding-top: 1.6rem; }
+.np-head { max-width: 860px; margin: 0 auto 1.8rem; text-align: center; }
+.np-kicker { color: var(--primary); font: 600 0.76rem/1.5 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.np-headline {
+  margin-top: 0.5rem;
+  font-family: var(--np-serif);
+  font-size: clamp(2rem, 4.8vw, 3.3rem);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.np-sapo { margin-top: 0.9rem; color: var(--text-muted); font-family: var(--np-serif); font-size: 1.24rem; line-height: 1.55; }
+.np-byline {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: 0.5rem 0.25rem;
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--text-faint);
+  font: 500 0.78rem/1.5 var(--mono);
+}
+.np-byline b { color: var(--text); }
+
+/* Thân bài: font serif, 2 cột trên máy tính, 1 cột trên điện thoại */
+.np-body { color: var(--text); font-family: var(--np-serif); font-size: 1.14rem; line-height: 1.68; }
+@media (min-width: 900px) {
+  .np-cols { column-count: 2; column-gap: 2.75rem; column-rule: 1px solid var(--border); }
+}
+.np-body p { margin: 0 0 0.9rem; }
+.np-body h3 {
+  margin: 1.4rem 0 0.5rem;
+  font-family: var(--np-serif);
+  font-size: 1.42rem;
+  font-weight: 700;
+  line-height: 1.25;
+  break-after: avoid;
+}
+.np-cols > h3:first-child { margin-top: 0; }
+.np-body b { font-weight: 700; }
+.np-lead::first-letter {                 /* chữ cái đầu to (drop cap) */
+  float: left;
+  margin: 0.05em 0.1em 0 0;
+  color: var(--primary);
+  font-size: 4.2em;
+  font-weight: 700;
+  line-height: 0.8;
+}
+.np-wide { column-span: all; margin: 1.8rem 0; }
+
+/* Các khối báo chí */
+.np-box {
+  break-inside: avoid;
+  margin: 0.3rem 0 1.1rem;
+  padding: 0.95rem 1.1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  font-family: var(--font);
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+.np-box h4 { margin: 0 0 0.55rem; color: var(--primary); font: 700 0.76rem/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.np-box p:last-child { margin-bottom: 0; }
+.np-box ul { margin: 0; padding-left: 1.1rem; }
+.np-box li + li { margin-top: 0.35rem; }
+.np-facts dl { display: grid; gap: 0.35rem; margin: 0; }
+.np-facts dl > div { display: grid; grid-template-columns: 7.2rem minmax(0, 1fr); gap: 0.6rem; padding-bottom: 0.35rem; border-bottom: 1px dashed var(--border); }
+.np-facts dt { color: var(--text-faint); font: 500 0.78rem/1.6 var(--mono); }
+.np-facts dd { margin: 0; font-weight: 500; }
+.np-note { margin-top: 0.55rem; color: var(--text-faint); font-size: 0.8rem; font-style: italic; }
+.np-did { border-left: 4px solid var(--np-clk); }
+.np-did h4 { color: var(--np-clk); }
+.np-warn { border-color: var(--rose); background: var(--rose-soft); }
+.np-warn h4 { color: var(--rose); }
+@media (min-width: 900px) {
+  .np-warn.np-wide ul { column-count: 2; column-gap: 2.25rem; }
+  .np-warn.np-wide li { break-inside: avoid; }
+}
+.np-tldr { border-color: var(--primary); background: var(--primary-soft); font-size: 1rem; }
+.np-pull {
+  break-inside: avoid;
+  margin: 1.2rem 0 1.3rem;
+  padding: 0.9rem 0.2rem;
+  border-top: 3px solid var(--primary);
+  border-bottom: 1px solid var(--primary);
+  font-family: var(--np-serif);
+  font-size: 1.45rem;
+  font-style: italic;
+  line-height: 1.35;
+  text-align: center;
+}
+.np-pull::before { content: "“"; color: var(--primary); }
+.np-pull::after { content: "”"; color: var(--primary); }
+
+/* Hình, chú thích */
+.np-figure { margin-inline: 0; }
+.np-figure figcaption { margin-top: 0.7rem; color: var(--text-muted); font: 0.92rem/1.6 var(--font); }
+.np-figure figcaption b { color: var(--text); }
+.np-fig-desc { margin: 0.35rem 0 0 !important; color: var(--text-faint); font: 0.82rem/1.6 var(--font); }
+
+/* Code */
+.np-code { display: grid; gap: 1rem; }   /* 2 khối code xếp chồng: dòng có chú thích dài không bị cắt */
+.np-code figure { margin: 0; min-width: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 10px; }
+.np-code figcaption { padding: 0.45rem 0.9rem; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); font: 600 0.74rem/1.5 var(--mono); }
+.np-code pre { margin: 0; padding: 0.9rem 1rem; overflow-x: auto; background: var(--scope-bg); color: #e6edf3; font: 500 0.8rem/1.65 var(--mono); }
+
+/* Điểm cộng / Điểm trừ */
+.np-procon { display: grid; gap: 1rem; font-family: var(--font); font-size: 0.95rem; line-height: 1.6; }
+@media (min-width: 640px) { .np-procon { grid-template-columns: 1fr 1fr; } }
+.np-procon > section { padding: 0.95rem 1.1rem; border: 1px solid var(--border-strong); border-top-width: 4px; border-radius: 10px; background: var(--surface); }
+.np-pro { border-top-color: var(--np-clk) !important; }
+.np-con { border-top-color: var(--rose) !important; }
+.np-procon h4 { margin: 0 0 0.5rem; font: 700 0.76rem/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.np-pro h4 { color: var(--np-clk); }
+.np-con h4 { color: var(--rose); }
+.np-procon ul { margin: 0; padding-left: 0; list-style: none; }
+.np-procon li { position: relative; padding-left: 1.3rem; }
+.np-procon li + li { margin-top: 0.35rem; }
+.np-pro li::before { content: "+"; position: absolute; left: 0; color: var(--np-clk); font-weight: 800; }
+.np-con li::before { content: "−"; position: absolute; left: 0; color: var(--rose); font-weight: 800; }
+
+/* Thanh tiến độ đọc (mảnh, màu cam, ngay dưới thanh menu) */
+.np-progress { position: fixed; left: 0; right: 0; top: var(--nav-h); z-index: 49; height: 3px; pointer-events: none; }
+.np-progress span { display: block; height: 100%; background: var(--primary); transform: scaleX(0); transform-origin: left; }
+
+/* ---------- Sơ đồ tương tác + bộ điều khiển dùng chung ---------- */
+.np-diagram {
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  font-family: var(--font);
+}
+.np-stage { padding: 0.75rem 0.75rem 0.25rem; }
+.np-svg { display: block; width: 100%; height: auto; }
+.np-swipe { display: none; margin: 0; color: var(--text-faint); font: 500 0.72rem/1.5 var(--mono); text-align: center; }
+@media (max-width: 699px) {           /* điện thoại: sơ đồ giữ cỡ đọc được, vuốt ngang để xem */
+  .np-stage { overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+  .np-stage .np-svg { min-width: 640px; }
+  .np-swipe { display: block; padding-top: 0.2rem; }
+}
+.np-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  padding: 0.35rem 1rem 0.6rem;
+  color: var(--text-muted);
+  font: 500 0.74rem/1.5 var(--mono);
+}
+.np-legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.np-legend i { display: inline-block; width: 16px; height: 4px; border-radius: 2px; background: var(--c); }
+.np-legend i.is-dot { width: 8px; height: 8px; border-radius: 50%; }
+.np-ctrlbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.np-ctrl { display: flex; gap: 0.35rem; }
+.np-btn {
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: 600 0.84rem/1 var(--font);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background-color 0.2s;
+}
+.np-btn:hover { border-color: var(--primary); color: var(--primary); }
+.np-btn svg { width: 16px; height: 16px; fill: currentColor; }
+.np-btn[aria-pressed="true"] { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+.np-speed { display: flex; gap: 0.25rem; }
+.np-speed .np-btn { min-width: 44px; font-family: var(--mono); font-size: 0.78rem; }
+.np-caption {
+  flex: 1 1 260px;
+  margin: 0 !important;
+  color: var(--text);
+  font: 500 0.9rem/1.5 var(--font);
+}
+.np-caption b { color: var(--primary); font-family: var(--mono); font-size: 0.82rem; }
+.np-try {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.7rem 1rem 0.85rem;
+  border-top: 1px dashed var(--border);
+}
+.np-try-label { color: var(--text-faint); font: 600 0.74rem/1.5 var(--mono); text-transform: uppercase; letter-spacing: 0.06em; }
+.np-seg { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.np-seg .np-btn { padding: 0 0.75rem; }
+.np-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+.np-hold { user-select: none; -webkit-user-select: none; touch-action: none; }
+.np-hold.is-down { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+
+/* Phần tử bên trong SVG */
+.np-svg text { fill: var(--text-muted); font: 600 12px var(--mono); }
+.np-svg .np-t-strong { fill: var(--text); }
+.np-svg .np-t-dim { fill: var(--text-faint); font-size: 11px; letter-spacing: 0.08em; }
+.np-svg .np-t-val { fill: var(--primary); font-size: 13px; }
+.np-svg .np-chip { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 7 5; }
+.np-svg .np-box-r { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.5; }
+.np-svg .np-valbox { fill: var(--bg); stroke: var(--border-strong); stroke-width: 1.2; transition: fill 0.25s, stroke 0.25s; }
+.np-svg .np-valbox.is-flash { fill: var(--primary-soft); stroke: var(--primary); }
+.np-svg .np-vcc { stroke: var(--np-vcc); stroke-width: 3; }
+.np-svg .np-vcc-t { fill: var(--np-vcc); }
+.np-svg .np-gnd { stroke: var(--np-gnd); stroke-width: 3; }
+.np-svg .np-gnd-t { fill: var(--np-gnd); }
+.np-svg .np-wire { fill: none; stroke: var(--text-faint); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.np-svg .np-ctl { fill: none; stroke: var(--text-faint); stroke-width: 1.4; stroke-dasharray: 4 4; }
+.np-svg .np-res { fill: none; stroke: var(--text-muted); stroke-width: 2; stroke-linejoin: round; }
+.np-svg .np-node { fill: var(--text-muted); }
+.np-svg .np-pad { fill: var(--surface); stroke: var(--text-muted); stroke-width: 2; }
+.np-svg .np-fet rect { fill: var(--surface); stroke: var(--border-strong); stroke-width: 2; transition: fill 0.25s, stroke 0.25s, opacity 0.25s; }
+.np-svg .np-fet .np-fet-state { fill: var(--text-faint); font-size: 11px; }
+.np-svg .np-fet.is-on rect { fill: var(--primary-soft); stroke: var(--primary); }
+.np-svg .np-fet.is-on .np-fet-state { fill: var(--primary); }
+.np-svg .np-fet.is-disabled rect { stroke-dasharray: 5 4; opacity: 0.55; }
+.np-svg .np-buf { fill: var(--surface); stroke: var(--text-muted); stroke-width: 2; transition: stroke 0.25s, fill 0.25s; }
+.np-svg .np-buf.is-on { stroke: var(--np-clk); fill: color-mix(in srgb, var(--np-clk) 14%, var(--surface)); }
+.np-svg .np-led { fill: var(--surface); stroke: var(--text-muted); stroke-width: 2; stroke-linejoin: round; transition: fill 0.2s; }
+.np-svg .np-led.is-on { fill: var(--np-led); stroke: #b45309; }
+.np-svg .np-glow { fill: var(--np-led); opacity: 0; transition: opacity 0.2s; }
+.np-svg .np-glow.is-on { opacity: 0.45; }
+.np-svg .np-dot { fill: var(--primary); }
+.np-svg .np-switch { stroke: var(--text-muted); stroke-width: 3; stroke-linecap: round; transition: transform 0.15s; }
+.np-svg .np-switch.is-down { stroke: var(--primary); }
+.np-svg .np-ext { transition: opacity 0.25s; }
