@@ -24,6 +24,16 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
+  // Đọc 1 byte người dùng gõ: 0x6B, 107, 01101011 hoặc 1 ký tự (A → 0x41). Sai định dạng → null
+  function parseByte(str) {
+    str = String(str).trim();
+    if (/^0x[0-9a-f]{1,2}$/i.test(str)) return parseInt(str, 16);
+    if (/^[01]{8}$/.test(str)) return parseInt(str, 2);
+    if (/^\d{1,3}$/.test(str) && Number(str) <= 255) return Number(str);
+    if (str.length === 1 && str.charCodeAt(0) < 256) return str.charCodeAt(0);
+    return null;
+  }
+  function hex2(v) { return '0x' + ('0' + v.toString(16).toUpperCase()).slice(-2); }
   function navHeight() {
     return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav-h')) || 68;
   }
@@ -43,7 +53,7 @@
      Trả về: { manual(text), speed(), visible(), destroy() }
      ========================================================= */
   function createPlayer(host, opts) {
-    var steps = opts.steps, n = steps.length;
+    var steps = opts.steps;     // sơ đồ có thể dựng lại danh sách bước (số bước đổi) → luôn đọc steps.length
     var i = 0, playing = false, userPaused = false, speed = 1, elapsed = 0, raf = 0, last = 0, visible = false;
 
     var bar = h('div', 'np-ctrlbar');
@@ -67,9 +77,10 @@
     if (stageEl) stageEl.insertAdjacentHTML('afterend', '<p class="np-swipe" aria-hidden="true">← Vuốt ngang để xem hết sơ đồ →</p>');
 
     function caption(k) {
-      cap.innerHTML = '<b>Bước ' + (k + 1) + '/' + n + '</b> ' + esc(steps[k].text);
+      cap.innerHTML = '<b>Bước ' + (k + 1) + '/' + steps.length + '</b> ' + esc(steps[k].text);
     }
     function show(k) {
+      var n = steps.length;
       i = ((k % n) + n) % n;
       elapsed = 0;
       opts.apply(steps[i].state);
@@ -135,6 +146,7 @@
       },
       speed: function () { return speed; },
       visible: function () { return visible; },
+      playing: function () { return playing; },
       progress: function () { return Math.min(1, elapsed / (steps[i].dur || 3200)); },   // tiến độ bước hiện tại 0…1
       restart: function () { show(0); play(); },
       destroy: function () { pause(false); if (io) io.disconnect(); }
@@ -779,14 +791,6 @@
     var player = createPlayer(host, { steps: steps, apply: apply });
     host.appendChild(tryBox);
 
-    function parseByte(str) {
-      str = String(str).trim();
-      if (/^0x[0-9a-f]{1,2}$/i.test(str)) return parseInt(str, 16);
-      if (/^[01]{8}$/.test(str)) return parseInt(str, 2);
-      if (/^\d{1,3}$/.test(str) && Number(str) <= 255) return Number(str);
-      if (str.length === 1 && str.charCodeAt(0) < 256) return str.charCodeAt(0);   // một ký tự, vd. A → 0x41
-      return null;
-    }
     tryBox.addEventListener('click', function (e) {
       var b = e.target.closest('[data-mode]');
       if (b) {
@@ -822,8 +826,388 @@
     return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
   }
 
+  /* =========================================================
+     SƠ ĐỒ 4 — I2C: 1 master + 3 slave chung SDA/SCL (open-drain + điện trở kéo lên) và giản đồ một giao dịch ghi
+       Thời gian T tính theo ô bit: START lúc T = 0.6; bit k chiếm ô [1 + k, 2 + k]: SDA đổi lúc 1.1 + k (SCL đang thấp),
+       SCL cao trong [1.3 + k, 1.8 + k], các bên lấy mẫu lúc 1.55 + k; sau bit cuối là STOP.
+     ========================================================= */
+  function mountI2c(host) {
+    var P = 32, X0 = 100, TEND = 20;                               // 1 bit = 32px trên giản đồ
+    var tx = function (T) { return X0 + T * P; };
+    var LANE = { scl: [340, 366], sda: [396, 422] };               // [y mức 1, y mức 0]
+    var SLV = [{ a: 0x48, name: 'ADS1115', x: 200 }, { a: 0x68, name: 'MPU6050', x: 360 }, { a: 0x3C, name: 'OLED', x: 520 }];
+    var cfg = { addr: 0x68, data: 0x6B };
+    var T = 0, t0 = 0, t1 = 0, tk = 0;    // tk: "thời điểm chính" của bước, hiện khi đang dừng (bấm ⏭)
+    var man = null;                       // null = đang trình diễn; [master, slave0, slave1, slave2] = người đọc tự kéo SDA
+    var ti = -1, nb = 0, E = 0, bits = [], outAt = [], flds = [], fldRects = [];
+    var bin7 = function (v) { var b = ('000000' + v.toString(2)).slice(-7); return b.slice(0, 3) + ' ' + b.slice(3); };
+    var bin8 = function (v) { var b = ('0000000' + v.toString(2)).slice(-8); return b.slice(0, 4) + ' ' + b.slice(4); };
+    var devName = function (i) { return i === 0 ? 'master' : hex2(SLV[i - 1].a) + ' (' + SLV[i - 1].name + ')'; };   // 0 = master
+    var RES = 'l9 4.5 l-18 9 l18 9 l-18 9 l18 9 l-18 9 l9 4.5';      // điện trở răng cưa cao 54px
+    var tag = function (id, x, y) {                                // nhãn "↓0": thiết bị này đang kéo SDA xuống
+      return '<g class="np-pulltag" data-tag="' + id + '" transform="translate(' + x + ' ' + y + ')">' +
+        '<rect x="-14" y="-9" width="28" height="18" rx="4"/><text text-anchor="middle" y="4">↓0</text></g>';
+    };
+
+    var devs = '', sdaTaps = '', sclTaps = '', jn = '', gnd = 'M80 190 V272 H585', tags = tag(0, 123, 110);
+    SLV.forEach(function (s, i) {
+      var x = s.x;
+      devs += '<g class="np-dev" data-dev="' + i + '"><rect class="np-box-r" x="' + x + '" y="190" width="130" height="60" rx="10"/>' +
+        '<text class="np-t-strong" x="' + (x + 12) + '" y="213" style="font-size:15px">' + hex2(s.a) + '</text>' +
+        '<text class="np-t-dim" x="' + (x + 118) + '" y="212" text-anchor="end">' + s.name + '</text>' +
+        '<text class="np-devst" data-st="' + i + '" x="' + (x + 12) + '" y="238"></text></g>';
+      sdaTaps += ' M' + (x + 40) + ' 110 V144 a6 6 0 0 1 0 12 V190';           // nhảy qua dây SCL (không nối)
+      sclTaps += ' M' + (x + 90) + ' 150 V190';
+      jn += '<circle class="np-jn" cx="' + (x + 40) + '" cy="110" r="4"/><circle class="np-jn" cx="' + (x + 90) + '" cy="150" r="4"/>';
+      gnd += ' M' + (x + 65) + ' 250 V272';
+      tags += tag(i + 1, x + 40, 170);
+    });
+
+    host.insertAdjacentHTML('beforeend',
+      '<div class="np-stage"><svg class="np-svg" viewBox="0 0 760 470" role="img" aria-label="Bus I2C: một master và ba slave 0x48, 0x68, 0x3C nối chung hai dây SDA và SCL, mỗi dây một điện trở kéo lên; bên dưới là giản đồ thời gian của một giao dịch ghi">' +
+        '<text class="np-t-strong" data-val="st1" x="20" y="28"></text><text data-val="st2" x="20" y="50"></text>' +
+        // nguồn 3.3 V và hai điện trở kéo lên
+        '<line class="np-vcc" x1="664" y1="30" x2="748" y2="30"/><text class="np-vcc-t" x="656" y="34" text-anchor="end">3.3 V</text>' +
+        '<path class="np-res" data-r="sda" d="M700 30 V44 ' + RES + ' V110"/><path class="np-res" data-r="scl" d="M730 30 V80 ' + RES + ' V150"/>' +
+        '<text x="688" y="62" text-anchor="end">R kéo lên</text><text class="np-t-dim" x="688" y="78" text-anchor="end">4.7 kΩ</text>' +
+        // hai dây bus (SDA vẽ sau để chỗ nhảy dây nằm trên SCL)
+        '<path class="np-sig np-sig-clk" d="M140 150 H730' + sclTaps + '"/>' +
+        '<path class="np-sig np-sig-data" d="M140 110 H700' + sdaTaps + '"/>' +
+        jn + '<circle class="np-jn" cx="700" cy="110" r="4"/><circle class="np-jn" cx="730" cy="150" r="4"/>' +
+        '<text class="np-sigt-data" x="320" y="102" text-anchor="middle">SDA · dữ liệu</text>' +
+        '<text class="np-sigt-clk" x="320" y="142" text-anchor="middle">SCL · nhịp clock</text>' +
+        '<text class="np-t-val" data-val="lsda" x="672" y="103" text-anchor="middle"></text>' +
+        '<text class="np-t-val" data-val="lscl" x="672" y="143" text-anchor="middle"></text>' +
+        // master + 3 slave + đất chung
+        '<path class="np-gnd" d="' + gnd + '" fill="none" style="stroke-width:2"/><text class="np-gnd-t" x="595" y="276">GND chung</text>' +
+        '<rect class="np-box-r" x="20" y="70" width="120" height="120" rx="12"/>' +
+        '<text class="np-t-strong" x="34" y="94">MASTER</text><text class="np-t-dim" x="34" y="112">ESP32</text>' +
+        '<text class="np-t-dim" x="34" y="132">tạo nhịp SCL</text><text class="np-devst" data-st="m" x="34" y="176"></text>' +
+        devs + tags +
+        // bit đang đi trên dây SDA
+        '<g data-el="dotm"><circle class="np-bitdot-m" r="10"/><text class="np-bitdot-t" text-anchor="middle" dy="4"></text></g>' +
+        '<g data-el="dots"><circle class="np-bitdot-s" r="10"/><text class="np-bitdot-t np-bitdot-t--light" text-anchor="middle" dy="4"></text></g>' +
+        // giản đồ thời gian
+        '<rect class="np-hl" data-el="hl" y="288" width="' + P + '" height="172"/>' +
+        '<g data-el="flds"></g>' +
+        '<text class="np-t-dim" x="20" y="307">TRƯỜNG</text><text class="np-sigt-clk" x="20" y="357">SCL</text>' +
+        '<text class="np-sigt-data" x="20" y="413">SDA</text><text class="np-t-dim" x="20" y="455">AI GIỮ</text>' +
+        '<g data-el="samples"></g>' +
+        '<path class="np-sig np-sig-clk" data-wave="scl"/><path class="np-sig np-sig-data" data-wave="sda"/>' +
+        '<path class="np-sig np-sig-miso" data-wave="sdas"/>' +
+        '<g data-el="labels"></g>' +
+        '<line class="np-cursor" data-el="cur" y1="288" y2="462"/><polygon class="np-sample-dot" data-el="curtip" points="0,0 0,0 0,0"/>' +
+      '</svg></div>' +
+      '<div class="np-legend"><span><i style="--c:var(--np-clk)"></i>SCL</span><span><i style="--c:var(--np-data)"></i>SDA · master gửi</span>' +
+        '<span><i style="--c:var(--np-miso)"></i>SDA · slave kéo xuống (ACK)</span><span><i style="--c:var(--np-vcc)"></i>điện trở đang kéo dây lên 1</span>' +
+        '<span><i style="--c:var(--primary)"></i>thời điểm hiện tại / lấy mẫu</span>' +
+        '<span>AI GIỮ: M = master kéo · S = slave kéo · R = điện trở kéo lên</span></div>');
+
+    var svg = host.querySelector('svg');
+    var q = function (sel) { return svg.querySelector(sel); };
+    var cur = q('[data-el="cur"]'), curtip = q('[data-el="curtip"]'), hl = q('[data-el="hl"]');
+    var rSda = q('[data-r="sda"]'), rScl = q('[data-r="scl"]'), lsda = q('[data-val="lsda"]'), lscl = q('[data-val="lscl"]');
+    var st1 = q('[data-val="st1"]'), st2 = q('[data-val="st2"]'), mst = q('[data-st="m"]');
+    var dotm = q('[data-el="dotm"]'), dots = q('[data-el="dots"]');
+    var tagEls = [0, 1, 2, 3].map(function (i) { return q('[data-tag="' + i + '"]'); });
+    var devG = SLV.map(function (s, i) { return q('[data-dev="' + i + '"]'); });
+    var devSt = SLV.map(function (s, i) { return q('[data-st="' + i + '"]'); });
+
+    function wave(segs, lane) {           // [tBắtĐầu, tKếtThúc, mức] → đường bậc thang
+      var d = '', prev = null;
+      segs.forEach(function (sg) {
+        var y = sg[2] ? lane[0] : lane[1];
+        if (prev === null) d += 'M' + tx(sg[0]).toFixed(1) + ' ' + y; else if (prev !== sg[2]) d += 'V' + y;
+        d += 'H' + tx(sg[1]).toFixed(1); prev = sg[2];
+      });
+      return d;
+    }
+    function drvText(who, x) {            // hàng "AI GIỮ": M master kéo · S slave kéo · R không ai kéo (điện trở kéo lên)
+      var c = who === 'm' ? ['np-sigt-data', 'M'] : typeof who === 'number' ? ['np-sigt-miso', 'S'] : ['np-vcc-t', 'R'];
+      return '<text class="' + c[0] + '" x="' + x + '" y="455" text-anchor="middle">' + c[1] + '</text>';
+    }
+
+    // Dựng lại mọi thứ phụ thuộc địa chỉ / dữ liệu: danh sách bit, trường, dạng sóng, nhãn, các bước
+    function rebuild() {
+      ti = -1;
+      SLV.forEach(function (s, i) { if (s.a === cfg.addr) ti = i; });
+      nb = ti >= 0 ? 18 : 9;              // có ACK: địa chỉ + R/W + ACK + 8 bit dữ liệu + ACK; NACK: dừng sau 9 bit
+      E = 1 + nb;
+      bits = [];
+      var k, v;
+      for (k = 0; k < 7; k++) { v = (cfg.addr >> (6 - k)) & 1; bits.push({ v: v, who: v ? null : 'm', kind: 'addr' }); }
+      bits.push({ v: 0, who: 'm', kind: 'rw' });
+      bits.push(ti >= 0 ? { v: 0, who: ti, kind: 'ack' } : { v: 1, who: null, kind: 'nack' });
+      if (ti >= 0) {
+        for (k = 0; k < 8; k++) { v = (cfg.data >> (7 - k)) & 1; bits.push({ v: v, who: v ? null : 'm', kind: 'data' }); }
+        bits.push({ v: 0, who: ti, kind: 'ack' });
+      }
+      outAt = SLV.map(function (s) {     // lúc slave nhận ra "không phải mình" (bit địa chỉ đầu tiên khác)
+        for (var j = 0; j < 7; j++) if (((s.a >> (6 - j)) & 1) !== bits[j].v) return 1.55 + j;
+        return Infinity;
+      });
+
+      flds = [[0.3, 1, 'S', ''], [1, 8, 'ĐỊA CHỈ ' + hex2(cfg.addr) + ' · ' + bin7(cfg.addr), ''], [8, 9, 'W', '']];
+      if (ti >= 0) flds.push([9, 10, 'ACK', 'is-ack'], [10, 18, 'DỮ LIỆU ' + hex2(cfg.data) + ' · ' + bin8(cfg.data), ''], [18, 19, 'ACK', 'is-ack'], [19, 20, 'P', '']);
+      else flds.push([9, 10, 'NACK', 'is-nack'], [10, 11, 'P', ''], [11, 20, 'bus rảnh — không có slave ' + hex2(cfg.addr), 'is-idle']);
+      var fh = '';
+      flds.forEach(function (f) {
+        fh += '<g><rect class="np-fld ' + f[3] + '" x="' + (tx(f[0]) + 1).toFixed(1) + '" y="292" width="' + ((f[1] - f[0]) * P - 2).toFixed(1) + '" height="22" rx="4"/>' +
+          '<text class="np-fldt" x="' + tx((f[0] + f[1]) / 2).toFixed(1) + '" y="307" text-anchor="middle">' + esc(f[2]) + '</text></g>';
+      });
+      q('[data-el="flds"]').innerHTML = fh;
+      fldRects = Array.prototype.slice.call(q('[data-el="flds"]').querySelectorAll('rect'));
+
+      var scl = [[0, 0.85, 1], [0.85, 1.3, 0]];
+      for (k = 0; k < nb; k++) { scl.push([1.3 + k, 1.8 + k, 1]); scl.push([1.8 + k, k < nb - 1 ? 2.3 + k : E + 0.3, 0]); }
+      scl.push([E + 0.3, TEND, 1]);
+      var sda = [[0, 0.6, 1], [0.6, 1.1, 0]], sdas = '', lab = '', smp = '';
+      for (k = 0; k < nb; k++) {
+        var b = bits[k], xm = tx(1.6 + k).toFixed(1), sx = tx(1.55 + k).toFixed(1);
+        sda.push([1.1 + k, 2.1 + k, b.v]);
+        if (typeof b.who === 'number') sdas += 'M' + tx(1.1 + k).toFixed(1) + ' ' + LANE.sda[1] + 'H' + tx(2.1 + k).toFixed(1);
+        lab += '<text class="' + (typeof b.who === 'number' ? 'np-sigt-miso' : 'np-wavet') + '" x="' + xm + '" y="' + (LANE.sda[0] - 6) + '" text-anchor="middle">' + b.v + '</text>' + drvText(b.who, xm);
+        smp += '<line class="np-sample" x1="' + sx + '" y1="334" x2="' + sx + '" y2="428"/><circle class="np-sample-dot" cx="' + sx + '" cy="' + LANE.scl[0] + '" r="3"/>';
+      }
+      sda.push([E + 0.1, E + 0.6, 0]); sda.push([E + 0.6, TEND, 1]);
+      lab += drvText('m', tx(0.85).toFixed(1)) + drvText('m', tx(E + 0.35).toFixed(1));      // START, STOP: master kéo SDA
+      q('[data-wave="scl"]').setAttribute('d', wave(scl, LANE.scl));
+      q('[data-wave="sda"]').setAttribute('d', wave(sda, LANE.sda));
+      q('[data-wave="sdas"]').setAttribute('d', sdas);
+      q('[data-el="labels"]').innerHTML = lab;
+      q('[data-el="samples"]').innerHTML = smp;
+      buildSteps();
+    }
+
+    function sdaAt(T) {                   // mức SDA và ai đang kéo ('m' = master, 0…2 = slave, null = không ai)
+      if (T < 0.6) return { v: 1, who: null };
+      if (T < 1.1) return { v: 0, who: 'm' };
+      var k = Math.floor(T - 1.1);
+      if (k < nb) return bits[k];
+      if (T < E + 0.6) return { v: 0, who: 'm' };
+      return { v: 1, who: null };
+    }
+    function sclAt(T) {
+      if (T < 0.85 || T >= E + 0.3) return 1;
+      var u = T - 1;
+      if (u < 0) return 0;
+      var f = u - Math.floor(u);
+      return Math.floor(u) < nb && f >= 0.3 && f < 0.8 ? 1 : 0;
+    }
+    function sclText(scl) {
+      if (T < 0.6) return 'SCL = 1 · bus rảnh, chưa có nhịp';
+      if (T < 0.85) return 'SCL = 1 · SDA vừa xuống khi SCL đang cao → START';
+      if (T >= E + 0.3 && T < E + 0.6) return 'SCL = 1 · master sắp thả SDA lên khi SCL đang cao';
+      if (T >= E + 0.6) return T < E + 1.3 ? 'SCL = 1 · SDA vừa lên khi SCL đang cao → STOP' : 'SCL = 1 · bus rảnh';
+      return scl ? 'SCL = 1 · cao: các bên đọc SDA, không ai được đổi' : 'SCL = 0 · thấp: lúc được phép đổi SDA';
+    }
+    function masterState() {
+      if (T < 0.6) return 'rảnh';
+      if (T < 1.1) return 'START';
+      var k = Math.floor(T - 1.1);
+      if (k < nb) {
+        var kind = bits[k].kind;
+        if (kind === 'addr') return 'gửi địa chỉ';
+        if (kind === 'rw') return 'gửi W = 0';
+        if (kind === 'data') return 'gửi dữ liệu';
+        if (T < 1.55 + k) return 'buông SDA…';
+        return kind === 'nack' ? 'NACK ✗' : 'nhận ACK ✓';
+      }
+      if (T < E + 0.6) return 'STOP';
+      return ti >= 0 ? 'xong ✓' : 'bỏ cuộc';
+    }
+    function slaveState(i) {
+      if (T < 0.6) return ['rảnh', ''];
+      if (T >= E + 0.6) return i === ti ? ['đã nhận ' + hex2(cfg.data), 'is-sel'] : ['rảnh', ''];
+      if (T >= outAt[i]) return ['không phải mình', 'is-off'];
+      if (T < 7.55) return ['đang nghe…', ''];
+      var k = Math.floor(T - 1.1);       // từ đây chỉ còn slave đúng địa chỉ
+      if (k >= nb) return ['đã nhận ' + hex2(cfg.data), 'is-sel'];
+      if (bits[k].kind === 'ack') return ['ACK: kéo SDA ↓', 'is-ack'];
+      if (bits[k].kind === 'data') {
+        var s = '', n = 0;
+        for (var j = 0; j < 8; j++) if (T >= 10.55 + j) { s += (n === 4 ? ' ' : '') + bits[9 + j].v; n++; }
+        return [n ? 'nhận ' + s : 'chờ dữ liệu…', 'is-sel'];
+      }
+      return ['đúng tên mình!', 'is-sel'];
+    }
+    function along(xEnd, down, f) {       // điểm trên dây SDA: từ chân master (140,110) sang phải tới xEnd rồi xuống
+      var len = (xEnd - 140) + down, d = f * len;
+      return d <= xEnd - 140 ? [140 + d, 110] : [xEnd, 110 + d - (xEnd - 140)];
+    }
+    function place(g, pt, v) {
+      g.setAttribute('transform', 'translate(' + pt[0].toFixed(1) + ' ' + pt[1].toFixed(1) + ')');
+      g.querySelector('text').textContent = v;
+    }
+
+    function render() {
+      var x = tx(T);
+      cur.setAttribute('x1', x.toFixed(1)); cur.setAttribute('x2', x.toFixed(1));
+      curtip.setAttribute('points', (x - 6) + ',282 ' + (x + 6) + ',282 ' + x + ',290');
+      var bk = Math.floor(T - 1);
+      if (bk >= 0 && bk < nb) { hl.style.display = ''; hl.setAttribute('x', tx(1 + bk)); } else hl.style.display = 'none';
+      fldRects.forEach(function (r, j) { r.classList.toggle('is-cur', T >= flds[j][0] && T < flds[j][1]); });
+
+      var pull = [false, false, false, false], sda, scl = sclAt(T);
+      if (man) { pull = man.slice(); sda = pull.some(Boolean) ? 0 : 1; }
+      else {
+        var d = sdaAt(T);
+        sda = d.v;
+        if (d.who === 'm') pull[0] = true; else if (typeof d.who === 'number') pull[d.who + 1] = true;
+      }
+      tagEls.forEach(function (g, i) { g.style.display = pull[i] ? '' : 'none'; });
+      rSda.classList.toggle('is-on', sda === 1);
+      rScl.classList.toggle('is-on', scl === 1);
+      lsda.textContent = '= ' + sda; lscl.textContent = '= ' + scl;
+      var np = pull.filter(Boolean).length;
+      st1.textContent = sda ? 'SDA = 1 · không ai kéo → điện trở kéo lên giữ mức 1'
+        : np === 1 ? 'SDA = 0 · ' + devName(pull.indexOf(true)) + ' đang kéo xuống'
+        : 'SDA = 0 · ' + np + ' thiết bị cùng kéo — vẫn là 0, không chập mạch';
+      st2.textContent = man ? 'Open-drain: chỉ được kéo xuống hoặc buông tay, không ai đẩy dây lên 1' : sclText(scl);
+
+      mst.textContent = man ? (pull[0] ? 'kéo SDA ↓' : 'buông SDA') : masterState();
+      SLV.forEach(function (s, i) {
+        var stt = man ? (pull[i + 1] ? ['kéo SDA ↓', 'is-ack'] : ['buông SDA', '']) : slaveState(i);
+        devSt[i].textContent = stt[0];
+        devG[i].setAttribute('class', 'np-dev' + (stt[1] ? ' ' + stt[1] : ''));
+      });
+
+      // chấm bit: vàng = master gửi (đi tới mọi slave khi gọi địa chỉ, tới đúng slave khi gửi dữ liệu); lam = ACK của slave đi về master
+      var showM = false, showS = false;
+      if (!man) {
+        var k = Math.floor(T - 1.1), u = T - 1.1 - k;
+        if (k >= 0 && k < nb && u < 0.7) {
+          var b = bits[k], f = Math.min(1, u / 0.45);
+          if (typeof b.who === 'number') { place(dots, along(SLV[b.who].x + 40, 80, 1 - f), b.v); showS = true; }
+          else if (b.kind !== 'nack') { place(dotm, b.kind === 'data' ? along(SLV[ti].x + 40, 80, f) : along(690, 0, f), b.v); showM = true; }
+        }
+      }
+      dotm.style.display = showM ? '' : 'none';
+      dots.style.display = showS ? '' : 'none';
+    }
+
+    var steps = [];
+    function buildSteps() {
+      var a = cfg.addr, list = [], tg = ti >= 0 ? SLV[ti] : null;
+      list.push({ t: [0, 0.55], dur: 2600, text: 'Bus rảnh: không ai kéo dây, hai điện trở kéo lên giữ SDA và SCL ở mức 1. Ba slave đều đang nghe.' });
+      list.push({ t: [0.55, 1], dur: 3000, text: 'START: master kéo SDA xuống 0 trong khi SCL vẫn ở mức 1. Đây là lần “phá luật” có chủ đích — mọi slave hiểu là “chú ý, bắt đầu!”.' });
+      for (var k = 0; k < 7; k++) {
+        var v = bits[k].v, outs = [];
+        SLV.forEach(function (s, i) { if (outAt[i] === 1.55 + k) outs.push(hex2(s.a)); });
+        list.push({ t: [1 + k, 2 + k], dur: k === 0 ? 4200 : 2600, text: 'Bit địa chỉ ' + (k + 1) + '/7 (A' + (6 - k) + ') = ' + v + ': ' +
+          (v ? 'master buông SDA, điện trở kéo lên đưa dây lên 1.' : 'master kéo SDA xuống 0.') +
+          (k === 0 ? ' SDA chỉ đổi khi SCL thấp; SCL lên cao thì mọi slave cùng đọc. Gửi bit 1 nghĩa là buông tay.' : ' SCL lên cao, các slave đọc.') +
+          (outs.length ? ' ' + outs.join(', ') + ' thấy bit này khác địa chỉ của mình → thôi nghe.' : '') });
+      }
+      list.push({ t: [8, 9], dur: 3200, text: 'Bit thứ 8 là R/W = 0: master muốn GHI. Byte đầu tiên trên dây là ' + hex2(a << 1) + ' (' + hex2(a) + ' dịch trái 1 bit, thêm bit W).' });
+      if (tg) {
+        list.push({ t: [9, 10], dur: 3800, text: 'Nhịp thứ 9: master buông SDA. Chỉ ' + hex2(a) + ' (' + tg.name + ') nhận ra tên mình và kéo SDA xuống 0 → ACK: “Có!”. Hai slave còn lại im lặng.' });
+        for (var j = 0; j < 8; j++) {
+          var dv = bits[9 + j].v;
+          list.push({ t: [10 + j, 11 + j], dur: j === 0 ? 3600 : 2400, text: 'Bit dữ liệu ' + (j + 1) + '/8 (D' + (7 - j) + ') = ' + dv + ': ' +
+            (dv ? 'master buông, SDA về 1 nhờ điện trở kéo lên' : 'master kéo SDA xuống 0') + '; ' + tg.name + ' đọc khi SCL cao.' +
+            (j === 0 ? ' Byte dữ liệu ' + hex2(cfg.data) + ', bit cao nhất (MSB) đi trước.' : '') });
+        }
+        list.push({ t: [18, 19], dur: 3200, text: 'Nhịp thứ 9 của byte dữ liệu: ' + tg.name + ' kéo SDA xuống lần nữa → ACK, đã nhận ' + hex2(cfg.data) + '.' });
+        list.push({ t: [19, 20], dur: 3800, text: 'STOP: master giữ SDA ở 0, thả SCL lên 1, rồi thả SDA lên 1 trong lúc SCL đang cao. Bus rảnh, sẵn sàng cho giao dịch mới.' });
+      } else {
+        list.push({ t: [9, 10], dur: 4200, text: 'Nhịp thứ 9: master buông SDA, nhưng không ai có địa chỉ ' + hex2(a) + ' — SDA vẫn ở 1 nhờ điện trở kéo lên → NACK. Master hiểu là không có ai.' });
+        list.push({ t: [10, 11], dur: 3400, text: 'Master gửi STOP và bỏ cuộc, không gửi byte dữ liệu. Trên Arduino, Wire.endTransmission() lúc này trả về 2 (NACK khi gửi địa chỉ).' });
+        list.push({ t: [11, 12.5], dur: 2800, text: 'Bus rảnh trở lại. i2c.scan() cũng dò bus đúng như vậy: địa chỉ nào trả NACK là không có thiết bị.' });
+      }
+      // thời điểm chính: bit đã đặt lên dây và vừa được đọc (1.6 + k); bước đầu/cuối lấy lúc rảnh, START, STOP
+      var key = function (t) {
+        if (t[0] === 0) return 0.3;                 // rảnh
+        if (t[0] === 0.55) return 0.75;             // START: SDA đã xuống, SCL còn cao
+        if (t[0] === E) return E + 0.8;             // STOP: SDA đã lên khi SCL cao
+        if (t[0] > E) return (t[0] + t[1]) / 2;     // bus rảnh sau NACK
+        return t[0] + 0.6;                          // bit k: đã đặt lên dây và vừa được đọc
+      };
+      steps.length = 0;
+      list.forEach(function (x) { steps.push({ state: { t0: x.t[0], t1: x.t[1], tk: key(x.t) }, text: x.text, dur: x.dur }); });
+    }
+
+    var tryBox = h('div', 'np-try');
+    tryBox.innerHTML =
+      '<span class="np-try-label">Tự thử</span>' +
+      '<span class="np-field">Gọi địa chỉ</span>' +
+      '<div class="np-seg" role="group" aria-label="Chọn địa chỉ master gọi">' +
+        [0x48, 0x68, 0x3C, 0x50].map(function (a) {
+          return '<button type="button" class="np-btn" data-addr="' + a + '">' + hex2(a) + (a === 0x50 ? ' · không có' : '') + '</button>';
+        }).join('') + '</div>' +
+      '<label class="np-field">Dữ liệu <input class="np-input" data-in="d" value="0x6B" maxlength="10" spellcheck="false" aria-label="Byte dữ liệu master ghi, ví dụ 0x6B"></label>' +
+      '<button type="button" class="np-btn" data-send>Gửi lại từ đầu</button>' +
+      '<span class="np-err" data-err role="alert"></span>';
+    var odBox = h('div', 'np-try');
+    odBox.innerHTML =
+      '<span class="np-try-label">Open-drain</span>' +
+      '<span class="np-field">Bấm để cho thiết bị kéo SDA</span>' +
+      '<div class="np-seg" role="group" aria-label="Cho từng thiết bị kéo SDA xuống">' +
+        ['Master', '0x48', '0x68', '0x3C'].map(function (n, i) {
+          return '<button type="button" class="np-btn" data-pull="' + i + '" aria-pressed="false">' + n + '</button>';
+        }).join('') + '</div>';
+    var pullBtns = Array.prototype.slice.call(odBox.querySelectorAll('[data-pull]'));
+
+    function syncAddr() {
+      Array.prototype.forEach.call(tryBox.querySelectorAll('[data-addr]'), function (b) { b.setAttribute('aria-pressed', String(Number(b.dataset.addr) === cfg.addr)); });
+    }
+    function apply(s) {
+      man = null;                         // trình diễn lại: bỏ các nút "kéo SDA" người đọc đã bấm
+      pullBtns.forEach(function (b) { b.setAttribute('aria-pressed', 'false'); });
+      t0 = s.t0; t1 = s.t1; tk = s.tk;
+      T = player && player.playing() ? t0 : tk;   // đang phát: chạy từ đầu bước; đang dừng: hiện thời điểm chính
+      render();
+    }
+    rebuild(); syncAddr();
+    var player = null;
+    player = createPlayer(host, { steps: steps, apply: apply });
+    host.appendChild(tryBox);
+    host.appendChild(odBox);
+
+    tryBox.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-addr]');
+      if (b) { cfg.addr = Number(b.dataset.addr); rebuild(); syncAddr(); player.restart(); }
+      if (e.target.closest('[data-send]')) send();
+    });
+    function send() {
+      var d = parseByte(tryBox.querySelector('[data-in="d"]').value), err = tryBox.querySelector('[data-err]');
+      if (d === null) { err.textContent = 'Nhập 1 byte: 0x00–0xFF, 0–255, 8 bit nhị phân hoặc 1 ký tự.'; return; }
+      err.textContent = '';
+      cfg.data = d;
+      rebuild(); player.restart();
+    }
+    tryBox.querySelector('input').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+    odBox.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-pull]');
+      if (!b) return;
+      if (!man) man = [false, false, false, false];
+      var i = Number(b.dataset.pull);
+      man[i] = !man[i];
+      b.setAttribute('aria-pressed', String(man[i]));
+      render();
+      var who = [];
+      man.forEach(function (on, j) { if (on) who.push(j === 0 ? 'Master' : SLV[j - 1].name + ' (' + hex2(SLV[j - 1].a) + ')'); });
+      player.manual(who.length === 0 ? 'Không ai kéo: SDA = 1 nhờ điện trở kéo lên.'
+        : who.length === 1 ? who[0] + ' kéo SDA → SDA = 0. Chỉ cần một bên kéo là cả dây xuống 0.'
+        : who.join(' và ') + ' cùng kéo → SDA vẫn = 0, không chập mạch vì không ai đẩy dây lên 1 (giống cổng AND nối dây).');
+    });
+
+    var raf = 0;
+    function frame() {
+      raf = requestAnimationFrame(frame);
+      if (!player.visible() || man) return;
+      var pr = player.progress();
+      var nt = !player.playing() && pr === 0 ? tk : t0 + (t1 - t0) * pr;
+      if (nt === T) return;
+      T = nt;
+      render();
+    }
+    raf = requestAnimationFrame(frame);
+    return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
+  }
+
   /* Danh sách sơ đồ: tên dùng trong data-np-diagram="…" */
-  var DIAGRAMS = { gpio: mountGpio, pull: mountPull, spi: mountSpi };
+  var DIAGRAMS = { gpio: mountGpio, pull: mountPull, spi: mountSpi, i2c: mountI2c };
 
   /* Ảnh minh họa nhỏ cho thẻ bài lớn ở trang nhất (theo mã bài) */
   var ART = {
@@ -862,7 +1246,23 @@
       '<text x="210" y="14" text-anchor="middle" fill="var(--np-data)" font-family="var(--mono)" font-size="11" font-weight="700">MOSI</text>' +
       '<text x="210" y="74" text-anchor="middle" fill="var(--np-miso)" font-family="var(--mono)" font-size="11" font-weight="700">MISO</text>' +
       '<path d="M40 132h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22" fill="none" stroke="var(--np-clk)" stroke-width="2.5"/>' +
-      '<text x="20" y="130" text-anchor="end" fill="var(--np-clk)" font-family="var(--mono)" font-size="10" font-weight="700">SCLK</text></svg>'
+      '<text x="20" y="130" text-anchor="end" fill="var(--np-clk)" font-family="var(--mono)" font-size="10" font-weight="700">SCLK</text></svg>',
+    i2c: '<svg viewBox="0 0 420 150" role="img" aria-label="Minh họa: một master và ba slave dùng chung hai dây SDA, SCL, mỗi dây một điện trở kéo lên">' +
+      '<path d="M336 12H410" stroke="var(--np-vcc)" stroke-width="3"/>' +
+      '<text x="330" y="16" text-anchor="end" fill="var(--np-vcc)" font-family="var(--mono)" font-size="10" font-weight="700">3.3 V</text>' +
+      '<path d="M360 12v8l6 3l-12 6l12 6l-12 6l12 6l-6 3v10M388 12v32l6 3l-12 6l12 6l-12 6l12 6l-6 3v10" fill="none" stroke="var(--text-muted)" stroke-width="2"/>' +
+      '<rect x="14" y="36" width="92" height="64" rx="10" fill="var(--scope-bg)"/>' +
+      '<text x="60" y="72" text-anchor="middle" fill="#e6edf3" font-family="var(--mono)" font-size="12" font-weight="600">MASTER</text>' +
+      '<path d="M106 84H388M178 84V106M254 84V106M330 84V106" fill="none" stroke="var(--np-clk)" stroke-width="3"/>' +
+      '<path d="M106 60H360M148 60V106M224 60V106M300 60V106" fill="none" stroke="var(--np-data)" stroke-width="3"/>' +
+      [[132, '0x48'], [208, '0x68'], [284, '0x3C']].map(function (s) {
+        return '<rect x="' + s[0] + '" y="106" width="62" height="34" rx="7" fill="var(--scope-bg)"' + (s[1] === '0x68' ? ' stroke="var(--primary)" stroke-width="3"' : '') + '/>' +
+          '<text x="' + (s[0] + 31) + '" y="128" text-anchor="middle" fill="#e6edf3" font-family="var(--mono)" font-size="11" font-weight="600">' + s[1] + '</text>' +
+          '<circle cx="' + (s[0] + 16) + '" cy="60" r="3.5" fill="var(--np-data)"/><circle cx="' + (s[0] + 46) + '" cy="84" r="3.5" fill="var(--np-clk)"/>';
+      }).join('') +
+      '<circle cx="360" cy="60" r="3.5" fill="var(--np-data)"/><circle cx="388" cy="84" r="3.5" fill="var(--np-clk)"/>' +
+      '<text x="114" y="53" fill="var(--np-data)" font-family="var(--mono)" font-size="10" font-weight="700">SDA</text>' +
+      '<text x="114" y="78" fill="var(--np-clk)" font-family="var(--mono)" font-size="10" font-weight="700">SCL</text></svg>'
   };
 
   /* =========================================================

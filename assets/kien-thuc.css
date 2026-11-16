@@ -443,3 +443,20 @@ a.np-card:hover .np-card-title { color: var(--primary); }
 .np-range input { width: 170px; accent-color: var(--primary); }
 .np-range output { min-width: 4.8em; color: var(--primary); }
 .np-range.is-disabled { opacity: 0.45; }
+
+/* I2C: dải tên trường trong gói, thiết bị đang kéo SDA, điện trở đang kéo dây lên */
+.np-svg .np-fld { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1; transition: fill 0.2s, stroke 0.2s; }
+.np-svg .np-fld.is-ack { fill: color-mix(in srgb, var(--np-miso) 18%, var(--surface)); }
+.np-svg .np-fld.is-nack { fill: color-mix(in srgb, var(--rose) 18%, var(--surface)); }
+.np-svg .np-fld.is-idle { fill: none; stroke-dasharray: 4 4; }
+.np-svg .np-fld.is-cur { stroke: var(--primary); stroke-width: 2; }
+.np-svg .np-fldt { fill: var(--text); font-size: 11px; }
+.np-svg .np-dev { transition: opacity 0.25s; }
+.np-svg .np-dev.is-off { opacity: 0.4; }
+.np-svg .np-dev.is-sel .np-box-r { stroke: var(--primary); stroke-width: 2; }
+.np-svg .np-dev.is-ack .np-box-r { fill: var(--primary-soft); stroke: var(--primary); stroke-width: 2; }
+.np-svg .np-devst { fill: var(--primary); font-size: 11px; }
+.np-svg .np-pulltag rect { fill: var(--primary); }
+.np-svg .np-pulltag text { fill: var(--on-primary); font-size: 11px; }
+.np-svg .np-res { transition: stroke 0.2s; }
+.np-svg .np-res.is-on { stroke: var(--np-vcc); stroke-width: 2.6; }
