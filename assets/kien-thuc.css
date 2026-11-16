@@ -390,6 +390,54 @@ a.np-card:hover .np-card-title { color: var(--primary); }
 .np-svg .np-trace-d { fill: none; stroke: var(--np-miso); stroke-width: 2.2; stroke-linejoin: round; }
 .np-svg .np-noise { fill: none; stroke: var(--rose); stroke-width: 1.6; stroke-linecap: round; }
 .np-svg .np-t-big { fill: var(--text); font-size: 15px; }
+/* Tín hiệu theo mã màu chung: clock xanh lá · dữ liệu vàng · MISO/RX lam · CS hồng */
+.np-svg .np-sig { fill: none; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; transition: opacity 0.2s; }
+.np-svg .np-sig-clk { stroke: var(--np-clk); }
+.np-svg .np-sig-data { stroke: var(--np-data); }
+.np-svg .np-sig-miso { stroke: var(--np-miso); }
+.np-svg .np-sig-cs { stroke: var(--np-cs); }
+.np-svg .np-sig.is-dim { opacity: 0.35; }
+.np-svg .np-wave-z { fill: none; stroke-width: 2; stroke-dasharray: 3 4; opacity: 0.75; }
+.np-svg .np-sigt-clk { fill: var(--np-clk); }
+.np-svg .np-sigt-data { fill: var(--np-data); }
+.np-svg .np-sigt-miso { fill: var(--np-miso); }
+.np-svg .np-sigt-cs { fill: var(--np-cs); }
+.np-svg .np-jn { fill: var(--text-muted); }
+.np-svg .np-wavet { fill: var(--text-muted); font-size: 11px; }
+/* Ô thanh ghi dịch: vàng = bit gốc của master, lam = bit gốc của slave */
+.np-svg .np-cell { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.2; transition: fill 0.25s; }
+.np-svg .np-cell.is-m { fill: color-mix(in srgb, var(--np-data) 32%, var(--surface)); }
+.np-svg .np-cell.is-s { fill: color-mix(in srgb, var(--np-miso) 26%, var(--surface)); }
+.np-svg .np-cellt { fill: var(--text); font-size: 14px; }
+.np-svg [data-cell] { transition: opacity 0.2s; }
+.np-svg .np-bitdot-m { fill: var(--np-data); stroke: var(--surface); stroke-width: 2; }
+.np-svg .np-bitdot-s { fill: var(--np-miso); stroke: var(--surface); stroke-width: 2; }
+.np-svg .np-bitdot-t { fill: #1c1a17; font-size: 11px; }
+.np-svg .np-bitdot-t--light { fill: #ffffff; }
+/* Con trỏ thời gian, bit hiện tại, điểm lấy mẫu */
+.np-svg .np-hl { fill: var(--primary-soft); opacity: 0.75; }
+.np-svg .np-cursor { stroke: var(--primary); stroke-width: 2; }
+.np-svg .np-sample { stroke: var(--primary); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.8; }
+.np-svg .np-sample-dot { fill: var(--primary); }
+/* Ô nhập byte, thông tin mode */
+.np-field { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--text-muted); font: 600 0.78rem/1 var(--mono); }
+.np-input {
+  width: 5.6em;
+  min-height: 40px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: 600 0.9rem/1 var(--mono);
+}
+.np-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.np-err { color: var(--rose); font: 500 0.82rem/1.4 var(--font); }
+.np-err:empty { display: none; }
+.np-modeinfo { color: var(--text-muted); font: 500 0.78rem/1.4 var(--mono); }
+.np-swipe--static { display: none; }
+@media (max-width: 699px) { .np-swipe--static { display: block; } }
+
 /* Thanh trượt (vd. giá trị điện trở) */
 .np-range { display: inline-flex; align-items: center; gap: 0.55rem; min-height: 40px; color: var(--text-muted); font: 600 0.82rem/1 var(--mono); }
 .np-range input { width: 170px; accent-color: var(--primary); }

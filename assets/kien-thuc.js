@@ -135,6 +135,8 @@
       },
       speed: function () { return speed; },
       visible: function () { return visible; },
+      progress: function () { return Math.min(1, elapsed / (steps[i].dur || 3200)); },   // tiến độ bước hiện tại 0…1
+      restart: function () { show(0); play(); },
       destroy: function () { pause(false); if (io) io.disconnect(); }
     };
   }
@@ -582,8 +584,246 @@
     return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
   }
 
+  /* =========================================================
+     SƠ ĐỒ 3 — SPI: hai thanh ghi dịch nối vòng tròn + giản đồ CS / SCLK / MOSI / MISO, chọn Mode 0–3
+     Trục thời gian T (đơn vị = 1 nhịp clock): CS xuống ở T = 0.5, bit i chiếm [1+i, 2+i], CS lên ở T = 9.5.
+     ========================================================= */
+  function mountSpi(host) {
+    var P = 64, X0 = 100;                                          // 1 nhịp = 64px trên giản đồ
+    var tx = function (T) { return X0 + T * P; };
+    var LANE = { cs: [296, 320], clk: [346, 370], mosi: [396, 420], miso: [446, 470] };   // [y mức 1, y mức 0]
+    var CELL = 32, MX = 52, SX = 452, CY = 120;                   // ô thanh ghi của master / slave
+    var cfg = { mode: 0, m: 0xA5, s: 0x3C };
+    var T = 0, t0 = 0, t1 = 0;
+    var cpol = function () { return cfg.mode >> 1; };              // Mode 0: 0/0 · 1: 0/1 · 2: 1/0 · 3: 1/1
+    var cpha = function () { return cfg.mode & 1; };
+    var bitOf = function (v, i) { return (v >> (7 - i)) & 1; };    // bit thứ i tính từ MSB
+    var hex = function (v) { return '0x' + ('0' + v.toString(16).toUpperCase()).slice(-2); };
+    var bin = function (v) { var b = ('0000000' + v.toString(2)).slice(-8); return b.slice(0, 4) + ' ' + b.slice(4); };
+    var launch = function (i) { return cpha() ? 1.5 + i : (i === 0 ? 0.5 : 1 + i); };   // lúc đặt bit lên dây
+    var sampleAt = function (i) { return cpha() ? 2 + i : 1.5 + i; };                   // lúc bên kia lấy mẫu
+    var edgeName = function () { return cfg.mode === 0 || cfg.mode === 3 ? 'lên' : 'xuống'; };
+
+    var cells = '';
+    for (var p = 0; p < 8; p++) {
+      cells += '<g data-cell="m' + p + '"><rect class="np-cell" x="' + (MX + p * CELL) + '" y="' + CY + '" width="' + CELL + '" height="32" rx="4"/>' +
+        '<text class="np-cellt" x="' + (MX + p * CELL + 16) + '" y="' + (CY + 21) + '" text-anchor="middle"></text></g>';
+      cells += '<g data-cell="s' + p + '"><rect class="np-cell" x="' + (SX + p * CELL) + '" y="' + CY + '" width="' + CELL + '" height="32" rx="4"/>' +
+        '<text class="np-cellt" x="' + (SX + p * CELL + 16) + '" y="' + (CY + 21) + '" text-anchor="middle"></text></g>';
+    }
+    var ticks = '';
+    for (var b = 0; b < 8; b++) ticks += '<text class="np-t-dim" x="' + tx(1.5 + b) + '" y="286" text-anchor="middle">bit ' + (7 - b) + '</text>';
+
+    host.insertAdjacentHTML('beforeend',
+      '<div class="np-stage"><svg class="np-svg" viewBox="0 0 760 500" role="img" aria-label="Giao dịch SPI: hai thanh ghi dịch 8 bit của master và slave trao đổi dữ liệu qua MOSI và MISO theo từng nhịp clock, kèm giản đồ thời gian bốn tín hiệu">' +
+        // dây nối (vẽ trước để nằm dưới hộp)
+        '<path class="np-sig np-sig-data" data-w="mosi" d="M52 136 H24 V44 H736 V136 H708"/>' +
+        '<path class="np-sig np-sig-miso" data-w="miso" d="M452 136 H308"/>' +
+        '<path class="np-sig np-sig-clk" data-w="clk" d="M150 200 V226 H610 V200"/>' +
+        '<path class="np-sig np-sig-cs" data-w="cs" d="M110 200 V254 H650 V200"/>' +
+        '<text class="np-sigt-data" x="380" y="36" text-anchor="middle">MOSI (COPI) · master → slave</text>' +
+        '<text class="np-sigt-miso" x="380" y="126" text-anchor="middle">MISO</text><text class="np-t-dim" x="380" y="154" text-anchor="middle">slave → master</text>' +
+        '<text class="np-sigt-clk" x="380" y="220" text-anchor="middle">SCLK · nhịp do master tạo</text>' +
+        '<text class="np-sigt-cs" x="380" y="248" text-anchor="middle">CS · kéo xuống 0 để chọn slave</text>' +
+        // hai thiết bị
+        '<rect class="np-box-r" x="30" y="70" width="300" height="130" rx="12" style="fill-opacity:.92"/><text class="np-t-strong" x="46" y="98">MASTER</text><text class="np-t-dim" x="120" y="98">vi điều khiển</text>' +
+        '<rect class="np-box-r" x="430" y="70" width="300" height="130" rx="12" style="fill-opacity:.92"/><text class="np-t-strong" x="446" y="98">SLAVE</text><text class="np-t-dim" x="508" y="98">ngoại vi</text>' +
+        '<text class="np-t-dim" x="308" y="114" text-anchor="end">thanh ghi dịch ←</text><text class="np-t-dim" x="708" y="114" text-anchor="end">thanh ghi dịch ←</text>' +
+        cells +
+        '<text class="np-t-strong" data-val="mhex" x="180" y="184" text-anchor="middle"></text><text class="np-t-strong" data-val="shex" x="580" y="184" text-anchor="middle"></text>' +
+        // bit đang bay trên dây
+        '<g data-el="dotm"><circle class="np-bitdot-m" r="10"/><text class="np-bitdot-t" text-anchor="middle" dy="4"></text></g>' +
+        '<g data-el="dots"><circle class="np-bitdot-s" r="10"/><text class="np-bitdot-t np-bitdot-t--light" text-anchor="middle" dy="4"></text></g>' +
+        // giản đồ thời gian
+        '<rect class="np-hl" data-el="hl" y="276" width="' + P + '" height="204"/>' +
+        ticks +
+        '<text class="np-sigt-cs" x="20" y="312">CS</text><text class="np-sigt-clk" x="20" y="362">SCLK</text>' +
+        '<text class="np-sigt-data" x="20" y="412">MOSI</text><text class="np-sigt-miso" x="20" y="462">MISO</text>' +
+        '<g data-el="samples"></g>' +
+        '<path class="np-sig np-sig-cs" data-wave="cs"/><path class="np-sig np-sig-clk" data-wave="clk"/>' +
+        '<path class="np-sig np-sig-data" data-wave="mosi"/><path class="np-wave-z np-sig-data" data-wave="mosiz"/>' +
+        '<path class="np-sig np-sig-miso" data-wave="miso"/><path class="np-wave-z np-sig-miso" data-wave="misoz"/>' +
+        '<g data-el="labels"></g>' +
+        '<line class="np-cursor" data-el="cur" y1="276" y2="482"/><polygon class="np-sample-dot" data-el="curtip" points="0,0 0,0 0,0"/>' +
+      '</svg></div>' +
+      '<div class="np-legend"><span><i style="--c:var(--np-clk)"></i>SCLK</span><span><i style="--c:var(--np-data)"></i>MOSI · bit của master</span>' +
+        '<span><i style="--c:var(--np-miso)"></i>MISO · bit của slave</span><span><i style="--c:var(--np-cs)"></i>CS</span>' +
+        '<span><i style="--c:var(--primary)"></i>thời điểm hiện tại / lấy mẫu</span><span><i style="--c:var(--text-faint)"></i>nét đứt: dây đang thả nổi</span></div>');
+
+    var svg = host.querySelector('svg');
+    var q = function (sel) { return svg.querySelector(sel); };
+    var mosiPath = q('[data-w="mosi"]'), misoPath = q('[data-w="miso"]');
+    var mosiLen = mosiPath.getTotalLength(), misoLen = misoPath.getTotalLength();
+
+    // Vẽ dạng sóng số từ danh sách đoạn [tBắtĐầu, tKếtThúc, mức] (mức 'z' = thả nổi, vẽ nét đứt ở giữa)
+    function wave(segs, lane) {
+      var hi = lane[0], lo = lane[1], mid = (hi + lo) / 2, d = '', dz = '', prev = null;
+      segs.forEach(function (sg) {
+        var xa = tx(sg[0]).toFixed(1), xb = tx(sg[1]).toFixed(1);
+        if (sg[2] === 'z') { dz += 'M' + xa + ' ' + mid + 'H' + xb; prev = null; return; }
+        var y = sg[2] ? hi : lo;
+        if (prev === null) d += 'M' + xa + ' ' + y; else if (prev !== sg[2]) d += 'V' + y;
+        d += 'H' + xb; prev = sg[2];
+      });
+      return [d, dz];
+    }
+    function dataSegs(v) {
+      var segs = [[0, launch(0), 'z']];
+      for (var i = 0; i < 8; i++) segs.push([launch(i), i < 7 ? launch(i + 1) : (cpha() ? 9.5 : 9), bitOf(v, i)]);
+      segs.push([cpha() ? 9.5 : 9, 10, 'z']);
+      return segs;
+    }
+    function rebuildWaves() {
+      var idle = cpol(), act = 1 - idle;
+      q('[data-wave="cs"]').setAttribute('d', wave([[0, 0.5, 1], [0.5, 9.5, 0], [9.5, 10, 1]], LANE.cs)[0]);
+      var clk = [[0, 1.5, idle]];
+      for (var i = 0; i < 8; i++) { clk.push([1.5 + i, 2 + i, act]); clk.push([2 + i, i < 7 ? 2.5 + i : 10, idle]); }
+      q('[data-wave="clk"]').setAttribute('d', wave(clk, LANE.clk)[0]);
+      var mw = wave(dataSegs(cfg.m), LANE.mosi), sw = wave(dataSegs(cfg.s), LANE.miso);
+      q('[data-wave="mosi"]').setAttribute('d', mw[0]); q('[data-wave="mosiz"]').setAttribute('d', mw[1]);
+      q('[data-wave="miso"]').setAttribute('d', sw[0]); q('[data-wave="misoz"]').setAttribute('d', sw[1]);
+      var lab = '', smp = '';
+      for (var j = 0; j < 8; j++) {
+        var mid = tx((launch(j) + sampleAt(j)) / 2 + 0.25);          // giữa cửa sổ dữ liệu của bit j
+        lab += '<text class="np-wavet" x="' + mid.toFixed(1) + '" y="' + (LANE.mosi[0] - 4) + '" text-anchor="middle">' + bitOf(cfg.m, j) + '</text>';
+        lab += '<text class="np-wavet" x="' + mid.toFixed(1) + '" y="' + (LANE.miso[0] - 4) + '" text-anchor="middle">' + bitOf(cfg.s, j) + '</text>';
+        var sx = tx(sampleAt(j)).toFixed(1);
+        smp += '<line class="np-sample" x1="' + sx + '" y1="340" x2="' + sx + '" y2="476"/><circle class="np-sample-dot" cx="' + sx + '" cy="358" r="3.5"/>';
+      }
+      q('[data-el="labels"]').innerHTML = lab;
+      q('[data-el="samples"]').innerHTML = smp;
+    }
+
+    function render() {
+      var x = tx(T);
+      var cur = q('[data-el="cur"]');
+      cur.setAttribute('x1', x.toFixed(1)); cur.setAttribute('x2', x.toFixed(1));
+      q('[data-el="curtip"]').setAttribute('points', (x - 6) + ',270 ' + (x + 6) + ',270 ' + x + ',278');
+      var bi = Math.floor(T - 1), hl = q('[data-el="hl"]');
+      if (bi >= 0 && bi < 8) { hl.style.display = ''; hl.setAttribute('x', tx(1 + bi)); } else hl.style.display = 'none';
+      var n = 0;
+      for (var i = 0; i < 8; i++) if (T >= sampleAt(i)) n++;              // số lần đã dịch
+      var flying = -1;
+      for (var k = 0; k < 8; k++) if (T >= launch(k) && T < sampleAt(k)) flying = k;
+      // nội dung 2 thanh ghi sau n lần dịch (vòng tròn 16 bit quay trái)
+      var mVal = 0, sVal = 0;
+      for (var p = 0; p < 8; p++) {
+        var src = p + n;
+        var mb = src < 8 ? bitOf(cfg.m, src) : bitOf(cfg.s, src - 8), mo = src < 8 ? 'm' : 's';
+        var sb = src < 8 ? bitOf(cfg.s, src) : bitOf(cfg.m, src - 8), so = src < 8 ? 's' : 'm';
+        mVal = (mVal << 1) | mb; sVal = (sVal << 1) | sb;
+        var gm = q('[data-cell="m' + p + '"]'), gs = q('[data-cell="s' + p + '"]');
+        gm.querySelector('rect').setAttribute('class', 'np-cell is-' + mo);
+        gm.querySelector('text').textContent = mb;
+        gs.querySelector('rect').setAttribute('class', 'np-cell is-' + so);
+        gs.querySelector('text').textContent = sb;
+        gm.style.opacity = gs.style.opacity = (p === 0 && flying >= 0) ? '0.35' : '1';   // bit đầu đang bay trên dây
+      }
+      q('[data-val="mhex"]').textContent = 'đang giữ ' + hex(mVal) + ' · ' + bin(mVal);
+      q('[data-val="shex"]').textContent = 'đang giữ ' + hex(sVal) + ' · ' + bin(sVal);
+      var dm = q('[data-el="dotm"]'), ds = q('[data-el="dots"]');
+      if (flying >= 0) {
+        var f = (T - launch(flying)) / (sampleAt(flying) - launch(flying));
+        var a = mosiPath.getPointAtLength(f * mosiLen), c = misoPath.getPointAtLength(f * misoLen);
+        dm.style.display = ds.style.display = '';
+        dm.setAttribute('transform', 'translate(' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) + ')');
+        ds.setAttribute('transform', 'translate(' + c.x.toFixed(1) + ' ' + c.y.toFixed(1) + ')');
+        dm.querySelector('text').textContent = bitOf(cfg.m, flying);
+        ds.querySelector('text').textContent = bitOf(cfg.s, flying);
+      } else dm.style.display = ds.style.display = 'none';
+      // dây sáng theo trạng thái
+      var csLow = T >= 0.5 && T < 9.5;
+      var clkAct = false;
+      for (var c2 = 0; c2 < 8; c2++) if (T >= 1.5 + c2 && T < 2 + c2) clkAct = true;
+      q('[data-w="cs"]').classList.toggle('is-dim', !csLow);
+      q('[data-w="clk"]').classList.toggle('is-dim', !clkAct);
+      q('[data-w="miso"]').classList.toggle('is-dim', !csLow);
+    }
+
+    var steps = [];
+    function buildSteps() {
+      var m = cfg.m, s = cfg.s, list = [];
+      list.push({ t: [0, 0.45], dur: 2000, text: 'Đường truyền rảnh: CS = 1 (chưa chọn slave nào), SCLK đứng yên ở mức nghỉ ' + cpol() + ' (CPOL = ' + cpol() + '), MISO đang thả nổi.' });
+      list.push({ t: [0.45, 1], dur: 2400, text: cpha()
+        ? 'Master kéo CS xuống 0 để chọn slave. Ở mode này (CPHA = 1), bit đầu tiên chỉ được đặt lên dây ở cạnh clock đầu tiên.'
+        : 'Master kéo CS xuống 0 để chọn slave. Cả hai đặt sẵn bit cao nhất (MSB) lên dây: master đặt ' + bitOf(m, 0) + ' lên MOSI, slave đặt ' + bitOf(s, 0) + ' lên MISO.' });
+      for (var i = 0; i < 8; i++) list.push({ t: [1 + i, 2 + i], dur: 2400,
+        text: 'Nhịp ' + (i + 1) + '/8, cạnh ' + edgeName() + ' của SCLK: slave đọc bit ' + (7 - i) + ' của master (' + bitOf(m, i) + ') trên MOSI, cùng lúc master đọc bit ' +
+          (7 - i) + ' của slave (' + bitOf(s, i) + ') trên MISO. Hai thanh ghi cùng dịch trái một ô.' + (i === 0 ? ' SPI thường gửi bit cao nhất (MSB) trước.' : '') });
+      list.push({ t: [9, 10], dur: 3400, text: 'Đủ 8 nhịp: hai thanh ghi đã đổi chỗ — master giữ ' + hex(s) + ' của slave, slave giữ ' + hex(m) + ' của master. Master nhả CS lên 1: xong, không có ACK nào.' });
+      steps.length = 0;
+      list.forEach(function (x) { steps.push({ state: { t0: x.t[0], t1: x.t[1] }, text: x.text, dur: x.dur }); });
+    }
+    function modeText() {
+      return 'Mode ' + cfg.mode + ' (CPOL = ' + cpol() + ', CPHA = ' + cpha() + '): SCLK nghỉ ở mức ' + cpol() + ', hai bên lấy mẫu ở cạnh ' + edgeName() +
+        (cpha() ? ' (cạnh thứ hai của mỗi nhịp).' : ' (cạnh đầu tiên của mỗi nhịp).');
+    }
+
+    var tryBox = h('div', 'np-try');
+    tryBox.innerHTML =
+      '<span class="np-try-label">Tự thử</span>' +
+      '<div class="np-seg" role="group" aria-label="Chọn SPI mode">' +
+        [0, 1, 2, 3].map(function (m) { return '<button type="button" class="np-btn" data-mode="' + m + '">Mode ' + m + '</button>'; }).join('') + '</div>' +
+      '<label class="np-field">Master gửi <input class="np-input" data-in="m" value="0xA5" maxlength="10" spellcheck="false" aria-label="Byte master gửi, ví dụ 0xA5"></label>' +
+      '<label class="np-field">Slave gửi <input class="np-input" data-in="s" value="0x3C" maxlength="10" spellcheck="false" aria-label="Byte slave gửi, ví dụ 0x3C"></label>' +
+      '<button type="button" class="np-btn" data-send>Gửi lại từ đầu</button>' +
+      '<span class="np-err" data-err role="alert"></span>' +
+      '<span class="np-modeinfo" data-modeinfo></span>';
+
+    function apply(s) { t0 = s.t0; t1 = s.t1; T = t0; render(); }
+    function syncMode() {
+      Array.prototype.forEach.call(tryBox.querySelectorAll('[data-mode]'), function (b) { b.setAttribute('aria-pressed', String(Number(b.dataset.mode) === cfg.mode)); });
+      tryBox.querySelector('[data-modeinfo]').textContent = 'Mode ' + cfg.mode + ': nghỉ ' + cpol() + ', lấy mẫu cạnh ' + edgeName();
+    }
+    buildSteps(); rebuildWaves(); syncMode();
+    var player = createPlayer(host, { steps: steps, apply: apply });
+    host.appendChild(tryBox);
+
+    function parseByte(str) {
+      str = String(str).trim();
+      if (/^0x[0-9a-f]{1,2}$/i.test(str)) return parseInt(str, 16);
+      if (/^[01]{8}$/.test(str)) return parseInt(str, 2);
+      if (/^\d{1,3}$/.test(str) && Number(str) <= 255) return Number(str);
+      if (str.length === 1 && str.charCodeAt(0) < 256) return str.charCodeAt(0);   // một ký tự, vd. A → 0x41
+      return null;
+    }
+    tryBox.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-mode]');
+      if (b) {
+        cfg.mode = Number(b.dataset.mode);
+        buildSteps(); rebuildWaves(); syncMode(); render();
+        player.manual(modeText());
+      }
+      if (e.target.closest('[data-send]')) send();
+    });
+    function send() {
+      var m = parseByte(tryBox.querySelector('[data-in="m"]').value), s = parseByte(tryBox.querySelector('[data-in="s"]').value);
+      var err = tryBox.querySelector('[data-err]');
+      if (m === null || s === null) { err.textContent = 'Nhập 1 byte: 0x00–0xFF, 0–255, 8 bit nhị phân hoặc 1 ký tự.'; return; }
+      err.textContent = '';
+      cfg.m = m; cfg.s = s;
+      buildSteps(); rebuildWaves(); player.restart();
+    }
+    Array.prototype.forEach.call(tryBox.querySelectorAll('input'), function (inp) {
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+    });
+
+    var raf = 0, lastP = -1;
+    function frame() {
+      raf = requestAnimationFrame(frame);
+      if (!player.visible()) return;
+      var pr = player.progress();
+      if (pr === lastP) return;
+      lastP = pr;
+      T = t0 + (t1 - t0) * pr;
+      render();
+    }
+    raf = requestAnimationFrame(frame);
+    return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
+  }
+
   /* Danh sách sơ đồ: tên dùng trong data-np-diagram="…" */
-  var DIAGRAMS = { gpio: mountGpio, pull: mountPull };
+  var DIAGRAMS = { gpio: mountGpio, pull: mountPull, spi: mountSpi };
 
   /* Ảnh minh họa nhỏ cho thẻ bài lớn ở trang nhất (theo mã bài) */
   var ART = {
@@ -609,7 +849,20 @@
       '<path d="M240 98L262 124" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round"/><circle cx="240" cy="128" r="3.5" fill="var(--text-muted)"/>' +
       '<path d="M240 128V140M226 140h28M231 146h18" stroke="var(--np-gnd)" stroke-width="2.5"/>' +
       '<text x="270" y="122" fill="var(--text-muted)" font-family="var(--mono)" font-size="11">nút</text>' +
-      '<text x="190" y="100" text-anchor="end" fill="var(--np-miso)" font-family="var(--mono)" font-size="13" font-weight="700">IN = 1</text></svg>'
+      '<text x="190" y="100" text-anchor="end" fill="var(--np-miso)" font-family="var(--mono)" font-size="13" font-weight="700">IN = 1</text></svg>',
+    spi: '<svg viewBox="0 0 420 150" role="img" aria-label="Minh họa: master và slave đổi bit cho nhau qua MOSI và MISO theo nhịp clock">' +
+      '<rect x="20" y="40" width="140" height="64" rx="10" fill="var(--scope-bg)"/><rect x="260" y="40" width="140" height="64" rx="10" fill="var(--scope-bg)"/>' +
+      '<text x="90" y="60" text-anchor="middle" fill="#e6edf3" font-family="var(--mono)" font-size="11" font-weight="600">MASTER</text>' +
+      '<text x="330" y="60" text-anchor="middle" fill="#e6edf3" font-family="var(--mono)" font-size="11" font-weight="600">SLAVE</text>' +
+      [0, 1, 2, 3].map(function (k) {
+        return '<rect x="' + (42 + k * 24) + '" y="70" width="20" height="20" rx="3" fill="#facc15"/><rect x="' + (282 + k * 24) + '" y="70" width="20" height="20" rx="3" fill="#60a5fa"/>';
+      }).join('') +
+      '<path d="M42 80H30V20H392V80H378" fill="none" stroke="var(--np-data)" stroke-width="3"/><path d="M370 20l10 -5v10z" fill="var(--np-data)"/>' +
+      '<path d="M282 80H138" fill="none" stroke="var(--np-miso)" stroke-width="3"/><path d="M150 80l-10 -5v10z" fill="var(--np-miso)"/>' +
+      '<text x="210" y="14" text-anchor="middle" fill="var(--np-data)" font-family="var(--mono)" font-size="11" font-weight="700">MOSI</text>' +
+      '<text x="210" y="74" text-anchor="middle" fill="var(--np-miso)" font-family="var(--mono)" font-size="11" font-weight="700">MISO</text>' +
+      '<path d="M40 132h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22v-14h22v14h22" fill="none" stroke="var(--np-clk)" stroke-width="2.5"/>' +
+      '<text x="20" y="130" text-anchor="end" fill="var(--np-clk)" font-family="var(--mono)" font-size="10" font-weight="700">SCLK</text></svg>'
   };
 
   /* =========================================================
