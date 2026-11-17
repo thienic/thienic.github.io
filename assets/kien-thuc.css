@@ -474,3 +474,10 @@ a.np-card:hover .np-card-title { color: var(--primary); }
 .np-svg .np-dimln { fill: none; stroke: var(--text-muted); stroke-width: 1.2; }
 .np-svg .np-rxv { fill: var(--np-miso); font-size: 11px; }
 .np-input--wide { width: 8.5em; }
+
+/* CAN: bit nhồi, node đang kéo bus về trội, hiệu điện áp, dấu thua phân xử */
+.np-svg .np-fld.is-stuff { fill: color-mix(in srgb, var(--primary) 34%, var(--surface)); stroke: var(--primary); }
+.np-svg .np-cantap path { transition: stroke-width 0.15s; }
+.np-svg .np-cantap.is-drive path { stroke-width: 5.5; }
+.np-svg .np-diff { fill: none; stroke: var(--text); stroke-width: 2; stroke-linejoin: round; }
+.np-svg .np-lose { fill: var(--rose); font-size: 11px; }

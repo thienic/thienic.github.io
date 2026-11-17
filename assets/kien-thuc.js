@@ -1599,8 +1599,426 @@
     return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
   }
 
+  /* =========================================================
+     SƠ ĐỒ 6 — CAN: bus CAN_H/CAN_L, 120 Ω hai đầu, 4 node; 3 node cùng gửi → phân xử theo ID từng bit;
+       khung chuẩn của bên thắng được dựng thật (CRC-15 của CAN, nhồi bit sau 5 bit giống nhau).
+       Thời gian T tính theo bit trên dây: bit thứ k của khung (đã nhồi) chiếm [1 + k, 2 + k].
+     ========================================================= */
+  function mountCan(host) {
+    var X0 = 110, WZ = 630;
+    var NODES = [
+      { name: 'PHANH / ABS', short: 'Phanh/ABS', lane: 'ABS TX', x: 40, id: 0x064, send: true },
+      { name: 'ĐỘNG CƠ', short: 'Động cơ', lane: 'ĐỘNG CƠ', x: 212, id: 0x078, send: true },
+      { name: 'ĐÈN', short: 'Đèn', lane: 'ĐÈN TX', x: 384, id: 0x300, send: true },
+      { name: 'BẢNG ĐỒNG HỒ', short: 'Bảng đồng hồ', x: 556, send: false }
+    ];
+    var LANES = [[296, 310], [320, 334], [344, 358]];               // TX của 3 node gửi: [y mức 1, y mức 0]
+    var vy = function (v) { return 404 - (v - 2.5) * 20; };        // điện áp → y (3,5 V ở 384, 1,5 V ở 424)
+    var dy = function (d) { return 452 - d * 7; };                 // hiệu CAN_H − CAN_L → y
+    var STRIP = [['SOF', 'SOF', 44], ['ID', 'ID 11 bit', 104], ['RTR', 'RTR', 44], ['CTL', 'IDE·r0', 58], ['DLC', 'DLC', 48],
+      ['DATA', 'DATA', 96], ['CRC', 'CRC 15 bit', 96], ['ACK', 'ACK', 52], ['EOF', 'EOF 7 bit', 74]];
+    var stripOf = function (f) { return f === 'IDE' || f === 'r0' ? 'CTL' : f; };
+    var cfg = { data: [0x12, 0x34], noise: false };
+    var T = 0, t0 = 0, t1 = 0, tk = 0, win = 0;
+    var bits = [], N = 0, Gend = 0, wi = 0, lossAt = [], crc = 0, fs = {}, fe = {}, ackIdx = 0, wins = [], nStuff = 0;
+    var zk = -1, W0 = 0, W1 = 1, P = 1, bandEls = [], stripEls = {};
+    var zx = function (g) { return X0 + (g - W0) * P; };
+    var hex3 = function (v) { return '0x' + ('00' + v.toString(16).toUpperCase()).slice(-3); };
+    var hex4 = function (v) { return '0x' + ('000' + v.toString(16).toUpperCase()).slice(-4); };
+    var bin = function (v, n) { var b = ''; for (var i = n - 1; i >= 0; i--) b += ((v >> i) & 1) + (i % 4 === 0 && i ? ' ' : ''); return b; };
+    var fmtV = function (v) { return v.toFixed(1).replace('.', ',') + ' V'; };
+    var nz = function (t) { return cfg.noise ? 0.28 * Math.sin(2 * Math.PI * t / 3.1) + 0.12 * Math.sin(2 * Math.PI * t / 0.7 + 1.3) : 0; };
+    var busAt = function (t) { var k = Math.floor(t - 1); return k >= 0 && k < N ? bits[k].v : 1; };
+
+    var taps = '', nodes = '', jn = '';
+    NODES.forEach(function (n, i) {
+      var x = n.x;
+      taps += '<g class="np-cantap" data-tap="' + i + '"><path class="np-sig np-sig-data" d="M' + (x + 60) + ' 70 V94 a6 6 0 0 1 0 12 V128"/>' +
+        '<path class="np-sig np-sig-miso" d="M' + (x + 98) + ' 100 V128"/></g>';
+      jn += '<circle class="np-jn" cx="' + (x + 60) + '" cy="70" r="4"/><circle class="np-jn" cx="' + (x + 98) + '" cy="100" r="4"/>';
+      nodes += '<g class="np-dev" data-dev="' + i + '"><rect class="np-box-r" x="' + x + '" y="128" width="158" height="66" rx="10"/>' +
+        '<text class="np-t-strong" x="' + (x + 12) + '" y="148">' + n.name + '</text>' +
+        (n.send ? '<text class="np-t-val" data-id="' + i + '" x="' + (x + 146) + '" y="148" text-anchor="end"></text>' : '') +
+        '<text class="np-devst" data-st="' + i + '" x="' + (x + 12) + '" y="168"></text>' +
+        '<text class="np-uart-s" data-ln="' + i + '" x="' + (x + 12) + '" y="186"></text></g>';
+    });
+    var res = function (x) {
+      return '<path class="np-wire" d="M' + x + ' 70 V76 M' + x + ' 94 V100"/><rect class="np-res" x="' + (x - 5) + '" y="76" width="10" height="18" rx="1"/>' +
+        '<text class="np-t-dim" x="' + x + '" y="58" text-anchor="middle">120 Ω</text>';
+    };
+    var laneLab = '';
+    LANES.forEach(function (l, i) { laneLab += '<text class="np-t-dim" x="20" y="' + (l[1] - 2) + '">' + NODES[i].lane + '</text>'; });
+
+    host.insertAdjacentHTML('beforeend',
+      '<div class="np-stage"><svg class="np-svg" viewBox="0 0 760 466" role="img" aria-label="Bus CAN: cặp dây CAN_H và CAN_L có điện trở 120 ôm ở hai đầu, bốn node Phanh/ABS, Động cơ, Đèn, Bảng đồng hồ; ba node cùng gửi và phân xử theo ID; bên dưới là dải các trường của khung CAN và giản đồ mức bus, TX từng node, điện áp CAN_H, CAN_L">' +
+        '<text class="np-t-strong" data-val="st1" x="20" y="22"></text><text data-val="st2" x="20" y="42"></text>' +
+        // bus: hai dây (vẽ thẳng cho dễ nhìn), 120 Ω ở hai đầu, các node treo bên dưới
+        taps +
+        '<line class="np-sig np-sig-data" x1="24" y1="70" x2="736" y2="70"/><line class="np-sig np-sig-miso" x1="24" y1="100" x2="736" y2="100"/>' +
+        jn + res(24) + res(736) +
+        '<text class="np-sigt-data" x="150" y="63">CAN_H</text><text class="np-sigt-miso" x="150" y="117">CAN_L</text>' +
+        '<text class="np-t-val" data-val="vh" x="377" y="63" text-anchor="middle"></text><text class="np-t-val" data-val="vl" x="377" y="117" text-anchor="middle"></text>' +
+        '<path class="np-dimln" d="M560 58 q5 -8 10 0 t10 0 t10 0 t10 0"/><path class="np-dimln" d="M560 58 q5 8 10 0 t10 0 t10 0 t10 0"/>' +
+        '<text class="np-t-dim" x="552" y="62" text-anchor="end">cặp dây xoắn</text>' +
+        nodes +
+        '<g data-el="dl"><circle class="np-bitdot-m" r="9"/><text class="np-bitdot-t" text-anchor="middle" dy="4"></text></g>' +
+        '<g data-el="dr"><circle class="np-bitdot-m" r="9"/><text class="np-bitdot-t" text-anchor="middle" dy="4"></text></g>' +
+        // dải các trường của khung
+        '<text class="np-t-dim" x="20" y="226">KHUNG</text><rect class="np-ovwin" data-el="swin" y="206" height="30" rx="5"/><g data-el="strip"></g>' +
+        // giản đồ phóng to
+        '<clipPath id="np-can-clip"><rect x="' + X0 + '" y="244" width="' + WZ + '" height="222"/></clipPath>' +
+        '<text class="np-t-dim" x="20" y="264">TRƯỜNG</text><text class="np-t-dim" x="20" y="290">BUS</text>' + laneLab +
+        '<text class="np-sigt-data" x="20" y="388">CAN_H</text><text class="np-sigt-miso" x="20" y="428">CAN_L</text>' +
+        '<text class="np-t-dim" x="104" y="388" text-anchor="end">3,5</text><text class="np-t-dim" x="104" y="408" text-anchor="end">2,5</text>' +
+        '<text class="np-t-dim" x="104" y="428" text-anchor="end">1,5 V</text>' +
+        '<text class="np-t-strong" x="20" y="455">H − L</text><text class="np-t-dim" x="104" y="442" text-anchor="end">2 V</text>' +
+        '<g clip-path="url(#np-can-clip)">' +
+          '<rect class="np-hl" data-el="hl" y="248" height="212"/>' +
+          '<g data-el="band"></g><g data-el="busv"></g><g data-el="lanes"></g>' +
+          '<line class="np-thr" x1="' + X0 + '" y1="384" x2="740" y2="384"/><line class="np-thr" x1="' + X0 + '" y1="404" x2="740" y2="404"/>' +
+          '<line class="np-thr" x1="' + X0 + '" y1="424" x2="740" y2="424"/><line class="np-thr" x1="' + X0 + '" y1="452" x2="740" y2="452"/>' +
+          '<path class="np-sig np-sig-data" data-el="vH" style="stroke-width:2.2"/><path class="np-sig np-sig-miso" data-el="vL" style="stroke-width:2.2"/>' +
+          '<path class="np-diff" data-el="vD"/>' +
+          '<line class="np-cursor" data-el="cur" y1="248" y2="462"/>' +
+        '</g>' +
+        '<polygon class="np-sample-dot" data-el="curtip" points="0,0 0,0 0,0"/>' +
+      '</svg></div>' +
+      '<div class="np-legend"><span><i style="--c:var(--np-data)"></i>CAN_H</span><span><i style="--c:var(--np-miso)"></i>CAN_L</span>' +
+        '<span><i style="--c:var(--text)"></i>H − L: hiệu điện áp bên nhận đọc</span><span><i class="is-dot" style="--c:var(--primary)"></i>ô cam đậm: bit nhồi</span>' +
+        '<span>nét đứt: node đang chỉ nghe · ✗: gửi 1 nhưng nghe 0 → thua</span><span><i style="--c:var(--primary)"></i>thời điểm hiện tại</span></div>');
+
+    var svg = host.querySelector('svg');
+    var q = function (sel) { return svg.querySelector(sel); };
+    var el = {};
+    ['st1', 'st2', 'vh', 'vl'].forEach(function (k) { el[k] = q('[data-val="' + k + '"]'); });
+    ['dl', 'dr', 'swin', 'strip', 'hl', 'band', 'busv', 'lanes', 'vH', 'vL', 'vD', 'cur', 'curtip'].forEach(function (k) { el[k] = q('[data-el="' + k + '"]'); });
+    var devG = NODES.map(function (n, i) { return q('[data-dev="' + i + '"]'); });
+    var devSt = NODES.map(function (n, i) { return q('[data-st="' + i + '"]'); });
+    var devLn = NODES.map(function (n, i) { return q('[data-ln="' + i + '"]'); });
+    var tapG = NODES.map(function (n, i) { return q('[data-tap="' + i + '"]'); });
+
+    // Dựng khung của bên thắng (ID nhỏ nhất), CRC-15, nhồi bit; tính bit mà mỗi node thua phân xử
+    function rebuild() {
+      wi = 0;
+      for (var i = 1; i < 3; i++) if (NODES[i].id < NODES[wi].id) wi = i;
+      var Wn = NODES[wi], u = [], k, n = cfg.data.length;
+      var push = function (v, f, key, name) { u.push({ v: v, f: f, key: key, name: name }); };
+      push(0, 'SOF', 'SOF', 'SOF');
+      for (k = 10; k >= 0; k--) push((Wn.id >> k) & 1, 'ID', 'ID' + k, 'ID' + k);
+      push(0, 'RTR', 'RTR', 'RTR'); push(0, 'IDE', 'IDE', 'IDE'); push(0, 'r0', 'r0', 'r0');
+      for (k = 3; k >= 0; k--) push((n >> k) & 1, 'DLC', 'DLC', 'DLC');
+      cfg.data.forEach(function (b, bi) { for (var j = 7; j >= 0; j--) push((b >> j) & 1, 'DATA', 'D' + bi, 'DATA ' + (bi + 1)); });
+      crc = 0;                                                     // CRC-15 của CAN: x^15 + x^14 + x^10 + x^8 + x^7 + x^4 + x^3 + 1
+      u.forEach(function (b) { var nx = b.v ^ ((crc >> 14) & 1); crc = (crc << 1) & 0x7FFF; if (nx) crc ^= 0x4599; });
+      for (k = 14; k >= 0; k--) push((crc >> k) & 1, 'CRC', 'CRC', 'CRC');
+      bits = []; nStuff = 0;
+      var umap = [], last = -1, run = 0;
+      u.forEach(function (b, ui) {                                 // nhồi bit từ SOF tới hết CRC
+        umap[ui] = bits.length;
+        bits.push({ v: b.v, tx: b.v, f: b.f, key: b.key, name: b.name });
+        if (b.v === last) run++; else { last = b.v; run = 1; }
+        if (run === 5) { var s = 1 - b.v; bits.push({ v: s, tx: s, f: b.f, key: 'n' + bits.length, name: 'nhồi', stuff: true }); nStuff++; last = s; run = 1; }
+      });
+      var tail = function (v, tx, f, key, name) { bits.push({ v: v, tx: tx, f: f, key: key, name: name }); };
+      tail(1, 1, 'CRC', 'CRCD', 'DEL');
+      ackIdx = bits.length; tail(0, 1, 'ACK', 'ACK', 'ACK');      // bên gửi để lặn, các node nhận kéo trội
+      tail(1, 1, 'ACK', 'ACKD', 'DEL');
+      for (k = 0; k < 7; k++) tail(1, 1, 'EOF', 'EOF', 'EOF');
+      for (k = 0; k < 3; k++) tail(1, 1, 'IFS', 'IFS', 'nghỉ');
+      N = bits.length; Gend = 1 + N;
+      fs = {}; fe = {};
+      bits.forEach(function (b, bi) { if (!(b.f in fs)) fs[b.f] = bi; fe[b.f] = bi + 1; });
+      lossAt = NODES.map(function (nd, ni) {                       // node thua ở bit ID đầu tiên khác bên thắng (nó gửi 1, bus 0)
+        if (!nd.send || ni === wi) return Infinity;
+        for (var j = 10; j >= 0; j--) if (((nd.id >> j) & 1) !== ((Wn.id >> j) & 1)) return umap[1 + 10 - j];
+        return Infinity;
+      });
+      var dEnd = n ? fe.DATA : fe.DLC;
+      wins = [[0, 1 + fe.RTR + 0.5], [1 + fs.IDE - 0.5, 1 + dEnd + 0.5], [1 + fs.CRC - 0.5, Gend]];
+      // dải các trường
+      var sx = X0, sh = '';
+      STRIP.forEach(function (s) {
+        var label = s[0] === 'DATA' ? 'DATA ' + n + ' byte' : s[1];
+        sh += '<g data-sf="' + s[0] + '" data-x="' + sx + '" data-w="' + s[2] + '"><rect class="np-fld' + (s[0] === 'DATA' && !n ? ' is-idle' : '') + '" x="' + (sx + 1) + '" y="210" width="' + (s[2] - 2) + '" height="22" rx="4"/>' +
+          '<text class="np-fldt" x="' + (sx + s[2] / 2) + '" y="225" text-anchor="middle">' + label + '</text></g>';
+        sx += s[2];
+      });
+      el.strip.innerHTML = sh;
+      stripEls = {};
+      Array.prototype.forEach.call(el.strip.children, function (g) { stripEls[g.dataset.sf] = g; });
+      zk = -1;
+      buildSteps();
+    }
+
+    function txOf(i, k) {                 // node i đang đưa gì ra chân TX ở bit k: 0/1 khi đang gửi, null khi chỉ nghe
+      if (k < 0 || k >= N) return null;
+      if (k === ackIdx) return i === wi ? 1 : 0;
+      if (!NODES[i].send) return null;
+      if (i === wi) return bits[k].f === 'IFS' ? null : bits[k].tx;
+      if (k < lossAt[i]) return bits[k].v;
+      return k === lossAt[i] ? 1 : null;
+    }
+
+    function buildZoom(w) {
+      zk = w; W0 = wins[w][0]; W1 = wins[w][1]; P = WZ / (W1 - W0);
+      var cell = function (a, b, label, cls) {
+        var wd = (b - a) * P - 2, lab = label.length * 6.4 <= wd + 2 ? label : label === 'nhồi' ? 'n' : label.slice(0, Math.max(1, Math.floor((wd + 2) / 6.4)));
+        return '<g data-a="' + a + '" data-b="' + b + '"><rect class="np-fld ' + cls + '" x="' + (zx(a) + 1).toFixed(1) + '" y="250" width="' + Math.max(1, wd).toFixed(1) + '" height="20" rx="4"/>' +
+          '<text class="np-fldt" x="' + zx((a + b) / 2).toFixed(1) + '" y="264" text-anchor="middle">' + lab + '</text></g>';
+      };
+      var k0 = Math.max(0, Math.floor(W0 - 1)), k1 = Math.min(N, Math.ceil(W1 - 1)), band = W0 < 1 ? cell(W0, 1, 'rảnh', 'is-idle') : '', bv = '', i, j;
+      for (i = k0; i < k1; i = j + 1) {   // gộp các bit liền nhau cùng trường (bit nhồi luôn là ô riêng)
+        j = i;
+        while (j + 1 < k1 && !bits[i].stuff && bits[j + 1].key === bits[i].key) j++;
+        var b0 = bits[i];
+        var cls = b0.stuff ? 'is-stuff' : b0.key === 'ACK' ? 'is-ack' : b0.f === 'IFS' ? 'is-idle' : b0.f === 'SOF' || b0.f === 'EOF' || b0.name === 'DEL' ? 'is-ss' : '';
+        band += cell(Math.max(W0, 1 + i), Math.min(W1, 2 + j), b0.name, cls);
+      }
+      for (i = k0; i < k1; i++) bv += '<text class="' + (bits[i].stuff ? 'np-t-val' : 'np-wavet') + '" x="' + zx(1.5 + i).toFixed(1) + '" y="290" text-anchor="middle">' + bits[i].v + '</text>';
+      el.band.innerHTML = band;
+      el.busv.innerHTML = bv;
+      bandEls = Array.prototype.map.call(el.band.children, function (g) { return { r: g.querySelector('rect'), a: +g.dataset.a, b: +g.dataset.b }; });
+      // TX của 3 node gửi: nét liền khi đang gửi, nét đứt (ở mức lặn) khi chỉ nghe
+      var lanes = '';
+      LANES.forEach(function (ln, ni) {
+        var d = '', dz = '', prev = null, mark = '';
+        for (var k = Math.floor(W0 - 1); k < Math.ceil(W1 - 1); k++) {
+          var a = Math.max(W0, 1 + k), b = Math.min(W1, 2 + k);
+          if (a >= b) continue;
+          var tx = txOf(ni, k), xa = zx(a).toFixed(1), xb = zx(b).toFixed(1);
+          if (tx === null) {
+            if (prev === 0) d += 'V' + ln[0];                          // vừa kéo trội (vd. ACK) → nhả về mức lặn
+            dz += 'M' + xa + ' ' + ln[0] + 'H' + xb; prev = null; continue;
+          }
+          var y = tx ? ln[0] : ln[1];
+          var start = a === W0 ? 'M' + xa + ' ' + y : 'M' + xa + ' ' + ln[0] + (tx ? '' : 'V' + y);   // bắt đầu gửi: từ mức lặn
+          d += (prev === null ? start : prev !== tx ? 'V' + y : '') + 'H' + xb;
+          prev = tx;
+          if (k === lossAt[ni]) mark = '<text class="np-lose" x="' + (zx(b) + 3).toFixed(1) + '" y="' + (ln[0] + 12) + '">✗ thua</text>';
+        }
+        lanes += '<path class="np-sig np-sig-data" d="' + d + '" style="stroke-width:2.2"/><path class="np-wave-z np-sig-data" d="' + dz + '"/>' + mark;
+      });
+      el.lanes.innerHTML = lanes;
+      // điện áp CAN_H, CAN_L (lặn: cùng 2,5 V, tách 1px để thấy cả hai nét) và hiệu H − L
+      var pH = '', pL = '', pD = '', st = cfg.noise ? 1 / 16 : 0;
+      if (st) {
+        for (var t = W0; t <= W1 + 1e-9; t += st) {
+          var v = busAt(t + 1e-6), n0 = nz(t), cmd = t === W0 ? 'M' : 'L';
+          pH += cmd + zx(t).toFixed(1) + ' ' + (vy((v ? 2.5 : 3.5) + n0) - (v ? 1 : 0)).toFixed(1);
+          pL += cmd + zx(t).toFixed(1) + ' ' + (vy((v ? 2.5 : 1.5) + n0) + (v ? 1 : 0)).toFixed(1);
+        }
+      }
+      var pv = null;
+      for (var g = Math.floor(W0); g < W1; g++) {
+        var ga = Math.max(W0, g), gb = Math.min(W1, g + 1), vv = busAt(ga + 1e-6), xa2 = zx(ga).toFixed(1), xb2 = zx(gb).toFixed(1);
+        if (!st) {
+          var yh = vv ? vy(2.5) - 1 : vy(3.5), yl = vv ? vy(2.5) + 1 : vy(1.5);
+          pH += (pv === null ? 'M' + xa2 + ' ' + yh : pv !== vv ? 'V' + yh : '') + 'H' + xb2;
+          pL += (pv === null ? 'M' + xa2 + ' ' + yl : pv !== vv ? 'V' + yl : '') + 'H' + xb2;
+        }
+        var yd = dy(vv ? 0 : 2);
+        pD += (pv === null ? 'M' + xa2 + ' ' + yd : pv !== vv ? 'V' + yd : '') + 'H' + xb2;
+        pv = vv;
+      }
+      el.vH.setAttribute('d', pH); el.vL.setAttribute('d', pL); el.vD.setAttribute('d', pD);
+      el.hl.setAttribute('width', P);
+      // khung cửa sổ trên dải các trường
+      var cover = [['SOF', 'RTR'], ['CTL', cfg.data.length ? 'DATA' : 'DLC'], ['CRC', 'EOF']][w];
+      var ga1 = stripEls[cover[0]], gb1 = stripEls[cover[1]];
+      el.swin.setAttribute('x', +ga1.dataset.x - 3);
+      el.swin.setAttribute('width', +gb1.dataset.x + +gb1.dataset.w - +ga1.dataset.x + 6);
+    }
+
+    function nodeState(i, k) {
+      var nd = NODES[i];
+      if (k === ackIdx) return i === wi ? ['nghe thấy ACK ✓', 'is-sel'] : ['nhận đúng → ACK ↓', 'is-ack'];
+      if (!nd.send) return [k >= 0 && k < N ? 'nghe mọi bản tin' : 'chỉ nghe', ''];
+      if (k < 0) return ['muốn gửi ID ' + hex3(nd.id), ''];
+      if (i === wi) return k < fe.RTR ? ['đang phân xử…', ''] : k < ackIdx ? ['thắng → gửi tiếp', 'is-sel'] : ['xong ✓', k < fs.IFS ? 'is-sel' : ''];
+      if (k < lossAt[i]) return ['đang phân xử…', ''];
+      if (k === lossAt[i]) return ['gửi 1, nghe 0 → thua', ''];
+      if (k >= fs.IFS) return ['chuẩn bị gửi lại', ''];
+      return ['thua ở ' + bits[lossAt[i]].name + ' → nghe', 'is-off'];
+    }
+
+    function render() {
+      if (win !== zk) buildZoom(win);
+      var inWin = T >= W0 && T <= W1, x = zx(T);
+      el.cur.style.display = el.curtip.style.display = inWin ? '' : 'none';
+      el.cur.setAttribute('x1', x.toFixed(1)); el.cur.setAttribute('x2', x.toFixed(1));
+      el.curtip.setAttribute('points', (x - 6) + ',240 ' + (x + 6) + ',240 ' + x + ',248');
+      var k = Math.floor(T - 1), on = k >= 0 && k < N, bv = on ? bits[k].v : 1;
+      if (on && 1 + k >= W0 - 0.01 && 2 + k <= W1 + 0.01) { el.hl.style.display = ''; el.hl.setAttribute('x', zx(1 + k).toFixed(1)); } else el.hl.style.display = 'none';
+      bandEls.forEach(function (o) { o.r.classList.toggle('is-cur', T >= o.a && T < o.b); });
+      var sf = on ? stripOf(bits[k].f) : '';
+      Object.keys(stripEls).forEach(function (f) { stripEls[f].querySelector('rect').classList.toggle('is-cur', f === sf); });
+
+      var n0 = nz(T), vH = (bv ? 2.5 : 3.5) + n0, vL = (bv ? 2.5 : 1.5) + n0;
+      el.vh.textContent = fmtV(vH); el.vl.textContent = fmtV(vL);
+      var loseNow = [];
+      NODES.forEach(function (nd, i) {
+        var tx = txOf(i, k), st = nodeState(i, k);
+        devSt[i].textContent = st[0];
+        devG[i].setAttribute('class', 'np-dev' + (st[1] ? ' ' + st[1] : ''));
+        devLn[i].textContent = !on ? 'bus rảnh = 1' : tx === null ? 'nghe: bus = ' + bv : 'gửi ' + tx + ' · nghe ' + bv + (tx !== bv ? (k === ackIdx ? ' ✓' : ' ✗') : '');
+        tapG[i].classList.toggle('is-drive', tx === 0);
+        if (nd.send) q('[data-id="' + i + '"]').textContent = hex3(nd.id);
+        if (k === lossAt[i]) loseNow.push(nd.short);
+      });
+      // bit lan ra khắp bus từ node đang lái (ACK: từ một node nhận)
+      if (on && bits[k].f !== 'IFS') {
+        var sx = (k === ackIdx ? NODES[3].x : NODES[wi].x) + 60, f = T - 1 - k;
+        [[el.dl, sx - f * (sx - 24)], [el.dr, sx + f * (736 - sx)]].forEach(function (p) {
+          p[0].style.display = '';
+          p[0].setAttribute('transform', 'translate(' + p[1].toFixed(1) + ' 70)');
+          p[0].querySelector('text').textContent = bv;
+        });
+      } else el.dl.style.display = el.dr.style.display = 'none';
+
+      var b = on ? bits[k] : null;
+      var name = !b ? 'Bus rảnh' : b.stuff ? 'Bit nhồi' : b.f === 'IFS' ? 'Nghỉ giữa hai khung' : b.name === 'DEL' ? 'Bit phân cách (DEL)' : b.name;
+      el.st1.textContent = name + ' · bus = ' + bv + (bv ? ' (lặn)' : ' (trội)') +
+        (loseNow.length ? ' · ' + loseNow.join(', ') + ' gửi 1 nhưng nghe 0 → thua' : k === ackIdx ? ' · các node nhận kéo bus xuống trội' : '');
+      el.st2.textContent = 'CAN_H ' + fmtV(vH) + ' · CAN_L ' + fmtV(vL) + ' · hiệu ' + fmtV(vH - vL) + ' → bit ' + (bv ? 'lặn (1)' : 'trội (0)') +
+        (cfg.noise ? ' · nhiễu ' + (n0 >= 0 ? '+' : '−') + fmtV(Math.abs(n0)) + ' ăn vào cả hai dây' : '');
+    }
+
+    var steps = [];
+    function buildSteps() {
+      var Wn = NODES[wi], list = [], snd = [0, 1, 2], losers = snd.filter(function (i) { return i !== wi; });
+      var stuffIn = function (a, b) {
+        var c = 0; for (var i = a; i < b; i++) if (bits[i].stuff) c++;
+        return c ? ' Có ' + c + ' bit nhồi (ô cam đậm) chen vào.' : '';
+      };
+      list.push({ t: [0, 1], tk: 0.5, w: 0, dur: 3200, text: 'Bus rảnh: không node nào lái, hai điện trở 120 Ω giữ CAN_H và CAN_L cùng quanh 2,5 V — hiệu 0 V, tức bit lặn (1). Ba node cùng có bản tin muốn gửi.' });
+      list.push({ t: [1, 2], tk: 1.6, w: 0, dur: 3600, text: 'SOF: cả ba node thấy bus rảnh nên cùng bắt đầu bằng một bit trội (0). CAN_H lên khoảng 3,5 V, CAN_L xuống khoảng 1,5 V — hiệu 2 V.' });
+      var active = snd.slice();
+      for (var s = 1; s < fe.RTR; s++) {
+        var b = bits[s], text, dur = 2400;
+        if (b.stuff) {
+          text = 'Bit nhồi = ' + b.v + ': vừa có 5 bit ' + (1 - b.v) + ' liên tiếp nên bên gửi chèn một bit ngược lại, để bus có cạnh cho mọi node canh lại đồng hồ. Bên nhận tự bỏ bit này.';
+          dur = 4200;
+        } else if (b.f === 'RTR') {
+          text = 'RTR = 0: đây là khung dữ liệu. Hết vùng phân xử — ' + Wn.short + ' (ID ' + hex3(Wn.id) + ', nhỏ nhất) thắng mà bản tin không chậm, không hỏng bit nào. ' +
+            losers.map(function (i) { return NODES[i].short; }).join(' và ') + ' chuyển sang nghe, sẽ tự gửi lại khi bus rảnh.';
+          dur = 4600;
+        } else {
+          var lost = active.filter(function (i) { return lossAt[i] === s; });
+          if (active.length > 1) {
+            text = 'Bit ' + b.name + ': ' + active.map(function (i) { return NODES[i].short + ' gửi ' + (lossAt[i] === s ? 1 : b.v); }).join(', ') + ' → bus = ' + b.v + '.';
+            if (s === 1) text += ' ID đi từ bit cao nhất; mỗi node vừa gửi vừa nghe lại bus.';
+            if (lost.length) {
+              text += ' ' + lost.map(function (i) { return NODES[i].short; }).join(', ') + ' gửi 1 (lặn) nhưng nghe thấy 0 (trội) → biết có bản tin quan trọng hơn, lặng lẽ thôi gửi và chuyển sang nghe.';
+              dur = 4800;
+            } else if (s === 1) dur = 4200;
+          } else { text = 'Bit ' + b.name + ' = ' + b.v + ': chỉ còn ' + Wn.short + ' gửi.'; dur = 1800; }
+          active = active.filter(function (i) { return lossAt[i] !== s; });
+        }
+        list.push({ t: [1 + s, 2 + s], tk: 1.6 + s, w: 0, dur: dur, text: text });
+      }
+      var n = cfg.data.length;
+      list.push({ t: [1 + fs.IDE, 1 + fe.DLC], tk: fe.DLC + 0.8, w: 1, dur: 4200, text: 'IDE = 0 và r0 = 0: khung chuẩn, ID 11 bit. DLC = ' + bin(n, 4) + ': bản tin có ' + n +
+        ' byte dữ liệu (tối đa 8).' + stuffIn(fs.IDE, fe.DLC) });
+      cfg.data.forEach(function (byte, bi) {
+        var a = bits.findIndex(function (x) { return x.key === 'D' + bi; }), e = a;
+        while (e < N && (bits[e].key === 'D' + bi || (bits[e].stuff && bits[e].f === 'DATA' && bits[e - 1].key === 'D' + bi))) e++;
+        list.push({ t: [1 + a, 1 + e], tk: e + 0.8, w: 1, dur: 4000, text: 'Byte dữ liệu ' + (bi + 1) + ' = ' + hex2(byte) + ' = ' + bin(byte, 8) +
+          ', bit cao nhất đi trước (ngược với UART).' + stuffIn(a, e) });
+      });
+      list.push({ t: [1 + fs.CRC, 1 + fe.CRC], tk: fe.CRC + 0.8, w: 2, dur: 4600, text: 'CRC = ' + hex4(crc) + ': mã kiểm tra 15 bit tính từ SOF tới hết dữ liệu. Mọi node nhận tự tính lại và so sánh; sau CRC là 1 bit phân cách (delimiter) lặn.' + stuffIn(fs.CRC, fe.CRC) });
+      list.push({ t: [1 + fs.ACK, 1 + fe.ACK], tk: ackIdx + 1.7, w: 2, dur: 4400, text: 'ACK: ' + Wn.short + ' gửi bit lặn, còn mọi node đã nhận đúng — ' +
+        losers.concat([3]).map(function (i) { return NODES[i].short; }).join(', ') + ' — cùng kéo bus xuống trội. Nghe thấy 0, ' + Wn.short + ' biết ít nhất một node đã nhận được.' });
+      var next = losers[0];
+      losers.forEach(function (i) { if (NODES[i].id < NODES[next].id) next = i; });
+      list.push({ t: [1 + fs.EOF, Gend], tk: Gend - 0.3, w: 2, dur: 4400, text: 'EOF: 7 bit lặn kết thúc khung, rồi 3 bit nghỉ. Bus rảnh — ' +
+        losers.map(function (i) { return NODES[i].short; }).join(' và ') + ' lại phân xử với nhau, lần này ' + NODES[next].short + ' (ID ' + hex3(NODES[next].id) + ') thắng.' });
+      steps.length = 0;
+      list.forEach(function (x) { steps.push({ state: { t0: x.t[0], t1: x.t[1], tk: x.tk, w: x.w }, text: x.text, dur: x.dur }); });
+    }
+
+    var tryBox = h('div', 'np-try');
+    tryBox.innerHTML =
+      '<span class="np-try-label">Tự thử</span>' +
+      [0, 1, 2].map(function (i) {
+        return '<label class="np-field">' + ['ID ABS', 'Động cơ', 'Đèn'][i] + ' <input class="np-input" data-in="' + i + '" value="' + hex3(NODES[i].id) +
+          '" maxlength="6" spellcheck="false" autocomplete="off" aria-label="ID 11 bit của ' + NODES[i].short + ', ví dụ ' + hex3(NODES[i].id) + '"></label>';
+      }).join('') +
+      '<button type="button" class="np-btn" data-send>Phân xử lại</button>' +
+      '<span class="np-err" data-err role="alert"></span>';
+    var dBox = h('div', 'np-try');
+    dBox.innerHTML =
+      '<span class="np-try-label">Khung</span>' +
+      '<label class="np-field">Dữ liệu <input class="np-input" data-in="d" value="12 34" maxlength="11" spellcheck="false" autocomplete="off" aria-label="Dữ liệu bên thắng gửi: 0 đến 2 byte hex, ví dụ 12 34"></label>' +
+      '<button type="button" class="np-btn" data-noise aria-pressed="false">Thêm nhiễu vào cả hai dây</button>' +
+      '<span class="np-modeinfo" data-info></span>';
+
+    function sync() {
+      dBox.querySelector('[data-noise]').setAttribute('aria-pressed', String(cfg.noise));
+      dBox.querySelector('[data-info]').textContent = 'Thắng: ' + NODES[wi].short + ' ' + hex3(NODES[wi].id) + ' · DLC ' + cfg.data.length +
+        ' · CRC ' + hex4(crc) + ' · khung ' + (N - 3) + ' bit (' + nStuff + ' bit nhồi)';
+    }
+    function apply(s) {
+      t0 = s.t0; t1 = s.t1; tk = s.tk; win = s.w;
+      T = player && player.playing() ? t0 : tk;     // đang phát: chạy từ đầu bước; đang dừng: hiện thời điểm chính
+      render();
+    }
+    rebuild(); sync();
+    var player = null;
+    player = createPlayer(host, { steps: steps, apply: apply });
+    host.appendChild(tryBox);
+    host.appendChild(dBox);
+
+    function parseId(s) {
+      s = String(s).trim();
+      var v = /^0x[0-9a-f]{1,3}$/i.test(s) ? parseInt(s, 16) : /^\d{1,4}$/.test(s) ? Number(s) : -1;
+      return v >= 0 && v <= 0x7FF ? v : null;
+    }
+    function parseData(s) {
+      var tk2 = String(s).trim().split(/[\s,]+/).filter(Boolean);
+      if (tk2.length > 2) return null;
+      var out = [];
+      for (var i = 0; i < tk2.length; i++) {
+        if (!/^(0x)?[0-9a-f]{1,2}$/i.test(tk2[i])) return null;
+        out.push(parseInt(tk2[i].replace(/^0x/i, ''), 16));
+      }
+      return out;
+    }
+    function send() {
+      var ids = [0, 1, 2].map(function (i) { return parseId(tryBox.querySelector('[data-in="' + i + '"]').value); });
+      var data = parseData(dBox.querySelector('[data-in="d"]').value), err = tryBox.querySelector('[data-err]');
+      if (ids.indexOf(null) >= 0 || ids[0] === ids[1] || ids[0] === ids[2] || ids[1] === ids[2]) { err.textContent = 'ID là số 11 bit: 0x000–0x7FF, và ba ID phải khác nhau.'; return; }
+      if (!data) { err.textContent = 'Dữ liệu: 0–2 byte hex, cách nhau bằng dấu cách, vd. 12 34.'; return; }
+      err.textContent = '';
+      ids.forEach(function (v, i) { NODES[i].id = v; });
+      cfg.data = data;
+      rebuild(); sync(); player.restart();
+    }
+    tryBox.addEventListener('click', function (e) { if (e.target.closest('[data-send]')) send(); });
+    Array.prototype.forEach.call(host.querySelectorAll('.np-try input'), function (inp) {
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+    });
+    dBox.addEventListener('click', function (e) {
+      if (!e.target.closest('[data-noise]')) return;
+      cfg.noise = !cfg.noise;
+      zk = -1; render(); sync();             // chỉ đổi cách vẽ điện áp, không chạy lại
+    });
+
+    var raf = 0;
+    function frame() {
+      raf = requestAnimationFrame(frame);
+      if (!player.visible()) return;
+      var pr = player.progress();
+      var nt = !player.playing() && pr === 0 ? tk : t0 + (t1 - t0) * pr;
+      if (nt === T) return;
+      T = nt;
+      render();
+    }
+    raf = requestAnimationFrame(frame);
+    return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
+  }
+
   /* Danh sách sơ đồ: tên dùng trong data-np-diagram="…" */
-  var DIAGRAMS = { gpio: mountGpio, pull: mountPull, spi: mountSpi, i2c: mountI2c, uart: mountUart };
+  var DIAGRAMS = { gpio: mountGpio, pull: mountPull, spi: mountSpi, i2c: mountI2c, uart: mountUart, can: mountCan };
 
   /* Ảnh minh họa nhỏ cho thẻ bài lớn ở trang nhất (theo mã bài) */
   var ART = {
@@ -1674,6 +2092,28 @@
         '<text x="298" y="18" text-anchor="end" fill="var(--np-miso)" font-family="var(--mono)" font-size="10" font-weight="700">TX</text>' +
         lab + '<path d="' + d + '" fill="none" stroke="var(--np-data)" stroke-width="3"/>' +
         '<text x="210" y="144" text-anchor="middle" fill="var(--text-muted)" font-family="var(--mono)" font-size="10" font-weight="600">‘T’ = 0x54 · LSB đi trước</text></svg>';
+    })(),
+    can: (function () {
+      // bus CAN_H / CAN_L, 120 Ω hai đầu, 3 node (ABS thắng), bên dưới là điện áp ở bit trội / lặn
+      var lv = [1, 0, 1, 1, 0, 0, 1, 0, 1], h = '', l = '', mono = 'font-family="var(--mono)" font-weight="700"';
+      lv.forEach(function (v, i) {
+        var x = 30 + i * 40;
+        h += (i === 0 ? 'M' + x + ' ' + (v ? 126 : 110) : (lv[i - 1] !== v ? 'V' + (v ? 126 : 110) : '')) + 'H' + (x + 40);
+        l += (i === 0 ? 'M' + x + ' ' + (v ? 128 : 144) : (lv[i - 1] !== v ? 'V' + (v ? 128 : 144) : '')) + 'H' + (x + 40);
+      });
+      return '<svg viewBox="0 0 420 150" role="img" aria-label="Minh họa: ba node trên bus CAN có điện trở 120 ôm hai đầu, bên dưới là điện áp CAN_H và CAN_L ở bit trội và bit lặn">' +
+        '<path d="M24 26H396" stroke="var(--np-data)" stroke-width="3"/><path d="M24 46H396" stroke="var(--np-miso)" stroke-width="3"/>' +
+        '<rect x="19" y="30" width="10" height="12" fill="none" stroke="var(--text-muted)" stroke-width="2"/><rect x="391" y="30" width="10" height="12" fill="none" stroke="var(--text-muted)" stroke-width="2"/>' +
+        [[60, 'ABS 0x064', true], [168, 'ĐỘNG CƠ', false], [276, 'ĐÈN', false]].map(function (n) {
+          return '<path d="M' + (n[0] + 30) + ' 26V64M' + (n[0] + 56) + ' 46V64" stroke="var(--text-faint)" stroke-width="2"/>' +
+            '<circle cx="' + (n[0] + 30) + '" cy="26" r="3.5" fill="var(--np-data)"/><circle cx="' + (n[0] + 56) + '" cy="46" r="3.5" fill="var(--np-miso)"/>' +
+            '<rect x="' + n[0] + '" y="64" width="86" height="28" rx="7" fill="var(--scope-bg)"' + (n[2] ? ' stroke="var(--primary)" stroke-width="3"' : '') + '/>' +
+            '<text x="' + (n[0] + 43) + '" y="82" text-anchor="middle" fill="#e6edf3" font-size="10" ' + mono + '>' + n[1] + '</text>';
+        }).join('') +
+        '<text x="34" y="20" fill="var(--np-data)" font-size="10" ' + mono + '>CAN_H</text><text x="366" y="60" fill="var(--np-miso)" font-size="10" ' + mono + '>CAN_L</text>' +
+        '<path d="' + h + '" fill="none" stroke="var(--np-data)" stroke-width="2.5"/><path d="' + l + '" fill="none" stroke="var(--np-miso)" stroke-width="2.5"/>' +
+        '<text x="90" y="104" text-anchor="middle" fill="var(--primary)" font-size="9" ' + mono + '>trội</text>' +
+        '<text x="50" y="104" text-anchor="middle" fill="var(--text-muted)" font-size="9" ' + mono + '>lặn</text></svg>';
     })()
   };
 
