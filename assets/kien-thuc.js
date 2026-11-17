@@ -1206,8 +1206,401 @@
     return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
   }
 
+  /* =========================================================
+     SƠ ĐỒ 5 — UART: 2 thiết bị nối chéo TX↔RX + GND; chuỗi ký tự đi qua dây theo khung 8N1 (hoặc có parity / 2 stop bit)
+       Thời gian T tính theo bit của BÊN GỬI. Khung của ký tự k bắt đầu ở F[k] = 1 + k·(L + 1) (giữa hai khung nghỉ 1 bit).
+       Bên nhận được mô phỏng thật: chờ cạnh xuống, lấy mẫu giữa mỗi bit theo baud rate CỦA NÓ → sai baud là ra rác.
+     ========================================================= */
+  function mountUart(host) {
+    var X0 = 100, WZ = 640;                                        // vùng vẽ giản đồ: x 100 → 740
+    var LANE = [320, 346];                                         // TX: [y mức 1, y mức 0]
+    var cfg = { text: 'THIEN', baud: 9600, par: '', stop: 1, wrong: false };   // par: '' | 'even' | 'odd'
+    var T = 0, t0 = 0, t1 = 0, tk = 0, win = 0;
+    var chars = [], fl = 10, Fs = [], Gend = 0, rxr = 1, rx = [], Gfin = 0;
+    var zk = -1, W0 = 0, P = 1, bandRects = [], smpEls = [], rxEls = [];   // khung đang phóng to trên giản đồ
+    var zx = function (g) { return X0 + (g - W0) * P; };
+    var ox = function (g) { return X0 + g * WZ / Gend; };          // dải "CHUỖI" thu nhỏ
+    var fmtT = function (us) {                                     // 104,2 µs · 8,68 µs · 1,04 ms
+      var s = us >= 1000 ? (us / 1000).toFixed(2) + ' ms' : us >= 10 ? +us.toFixed(1) + ' µs' : us.toFixed(2) + ' µs';
+      return s.replace('.', ',');
+    };
+    var bin8 = function (v) { var b = ('0000000' + v.toString(2)).slice(-8); return b.slice(0, 4) + ' ' + b.slice(4); };
+    var fmtName = function () { return '8' + (cfg.par === 'even' ? 'E' : cfg.par === 'odd' ? 'O' : 'N') + cfg.stop; };
+    var rxBaud = function () { return cfg.wrong ? cfg.baud * 2 : cfg.baud; };     // "sai baud": bên nhận đặt gấp đôi
+    var shown = function (b) { return b >= 32 && b < 127 ? String.fromCharCode(b) : '�'; };
+    var qc = function (x) { return '‘' + (x.ch === ' ' ? '␣' : x.ch) + '’'; };
+    var parName = function () { return cfg.par === 'even' ? 'chẵn' : 'lẻ'; };
+
+    var seq = '';
+    for (var j0 = 0; j0 < 8; j0++) seq += '<tspan data-b="' + j0 + '"></tspan>' + (j0 < 7 ? ' ' : '');
+    host.insertAdjacentHTML('beforeend',
+      '<div class="np-stage"><svg class="np-svg" viewBox="0 0 760 432" role="img" aria-label="Hai thiết bị nối chéo TX và RX qua UART; chuỗi ký tự đi qua dây TX theo từng khung start bit, 8 bit dữ liệu, parity, stop bit; bên nhận lấy mẫu giữa mỗi bit">' +
+        '<text class="np-t-strong" data-val="st1" x="20" y="24"></text><text data-val="st2" x="20" y="44"></text>' +
+        // hai dây nối chéo (vẽ trước hộp) + GND chung
+        '<path class="np-sig np-sig-miso is-dim" d="M520 96 H430 L330 150 H240"/>' +
+        '<path class="np-sig np-sig-data" d="M240 96 H330 L430 150 H520"/>' +
+        '<polygon class="np-sigt-data" points="292,90 304,96 292,102"/><polygon class="np-sigt-miso" points="478,90 466,96 478,102" style="opacity:.45"/>' +
+        '<text class="np-sigt-data" x="248" y="86">TX</text><text class="np-sigt-miso" x="248" y="170">RX</text>' +
+        '<text class="np-sigt-miso" x="512" y="86" text-anchor="end">TX</text><text class="np-sigt-data" x="512" y="170" text-anchor="end">RX</text>' +
+        '<text class="np-t-dim" x="380" y="80" text-anchor="middle">nối chéo TX ↔ RX</text>' +
+        '<text class="np-t-dim" x="380" y="176" text-anchor="middle">(B → A đang rảnh)</text>' +
+        '<path class="np-gnd" d="M130 190 V204 H630 V190" fill="none" style="stroke-width:2"/><text class="np-gnd-t" x="640" y="208">GND chung</text>' +
+        // bên gửi
+        '<rect class="np-box-r" x="20" y="58" width="220" height="132" rx="12"/>' +
+        '<text class="np-t-strong" x="34" y="80">BÊN GỬI (A) · ESP32</text>' +
+        '<text class="np-big" data-val="ch" x="34" y="128"></text>' +
+        '<text data-val="asc" x="80" y="108"></text><text class="np-t-strong" data-val="bin" x="80" y="128"></text>' +
+        '<text class="np-t-dim" x="34" y="156">lên dây, LSB trước:</text>' +
+        '<text class="np-bitseq" x="34" y="178">' + seq + '</text>' +
+        // bên nhận
+        '<rect class="np-box-r" x="520" y="58" width="220" height="132" rx="12"/>' +
+        '<text class="np-t-strong" x="536" y="80">BÊN NHẬN (B) · MÁY TÍNH</text>' +
+        '<rect class="np-term" x="536" y="90" width="190" height="38" rx="6"/><text class="np-term-t" data-val="term" x="546" y="115"></text>' +
+        '<text class="np-uart-s" data-val="bst" x="536" y="154"></text><text class="np-uart-s" data-val="bbaud" x="536" y="176"></text>' +
+        // bit đang đi trên dây TX
+        '<g data-el="dot"><circle class="np-bitdot-m" r="10"/><text class="np-bitdot-t" text-anchor="middle" dy="4"></text></g>' +
+        // cả chuỗi thu nhỏ
+        '<text class="np-t-dim" x="20" y="246">CHUỖI</text>' +
+        '<rect class="np-ovwin" data-el="ovwin" y="218" height="34" rx="4"/>' +
+        '<path class="np-sig np-sig-data" data-el="ovw" style="stroke-width:2"/><g data-el="ovl"></g>' +
+        '<line class="np-cursor" data-el="ovcur" y1="218" y2="252"/>' +
+        // giản đồ phóng to một khung
+        '<clipPath id="np-uart-clip"><rect x="' + X0 + '" y="254" width="' + WZ + '" height="178"/></clipPath>' +
+        '<text class="np-t-dim" x="20" y="278">KHUNG</text><text class="np-sigt-data" x="20" y="338">TX</text>' +
+        '<text class="np-t-dim" x="20" y="372">RX ĐỌC</text><text class="np-t-dim" x="20" y="397">RX HIỂU</text>' +
+        '<g clip-path="url(#np-uart-clip)">' +
+          '<rect class="np-hl" data-el="hl" y="258" height="160"/>' +
+          '<g data-el="band"></g><g data-el="dim"></g>' +
+          '<path class="np-sig np-sig-data" data-el="wave"/><g data-el="vals"></g>' +
+          '<g data-el="smp"></g><g data-el="rxb"></g><g data-el="time"></g>' +
+          '<line class="np-cursor" data-el="cur" y1="258" y2="426"/>' +
+        '</g>' +
+        '<polygon class="np-sample-dot" data-el="curtip" points="0,0 0,0 0,0"/>' +
+      '</svg></div>' +
+      '<div class="np-legend"><span><i style="--c:var(--np-data)"></i>TX · dây A → B</span><span><i style="--c:var(--np-miso)"></i>RX · dây B → A / giá trị bên nhận đọc</span>' +
+        '<span><i style="--c:var(--np-gnd)"></i>GND</span><span><i style="--c:var(--primary)"></i>thời điểm hiện tại · vạch đứt: bên nhận lấy mẫu</span></div>');
+
+    var svg = host.querySelector('svg');
+    var q = function (sel) { return svg.querySelector(sel); };
+    var el = {};
+    ['st1', 'st2', 'ch', 'asc', 'bin', 'term', 'bst', 'bbaud'].forEach(function (k) { el[k] = q('[data-val="' + k + '"]'); });
+    ['dot', 'ovwin', 'ovw', 'ovl', 'ovcur', 'hl', 'band', 'dim', 'wave', 'vals', 'smp', 'rxb', 'time', 'cur', 'curtip'].forEach(function (k) { el[k] = q('[data-el="' + k + '"]'); });
+    var seqEls = Array.prototype.slice.call(svg.querySelectorAll('[data-b]'));
+
+    // Mức trên dây TX ở thời điểm g, và bit nào của ký tự nào đang được gửi
+    function bitAt(g) {
+      if (g < 1) return null;
+      var k = Math.floor((g - 1) / (fl + 1));
+      if (k >= chars.length) return null;
+      var u = g - Fs[k];
+      return u < fl ? { k: k, i: Math.floor(u) } : null;
+    }
+    function lvl(g) { var b = bitAt(g); return b ? chars[b.k].bits[b.i].v : 1; }
+
+    // Bên nhận: chờ cạnh xuống (1 → 0), rồi lấy mẫu giữa từng bit theo độ dài bit của nó (rxr, tính theo bit bên gửi)
+    function simulate() {
+      var out = [], g = 0, rl = 10 + (cfg.par ? 1 : 0);              // chỉ kiểm tra stop bit đầu tiên
+      for (var guard = 0; guard < 160; guard++) {
+        var s = -1;
+        for (var t = Math.max(1, Math.ceil(g)); t <= Gend; t++) if (lvl(t - 0.5) === 1 && lvl(t + 0.5) === 0) { s = t; break; }
+        if (s < 0) break;
+        var smp = [], byte = 0, ones = 0, j;
+        for (j = 0; j < rl; j++) { var ts = s + (j + 0.5) * rxr; smp.push({ t: ts, v: lvl(ts), j: j }); }
+        if (smp[0].v !== 0) { g = smp[0].t; continue; }                // nhiễu, không phải start bit thật
+        for (j = 0; j < 8; j++) { byte |= smp[1 + j].v << j; ones += smp[1 + j].v; }
+        var perr = cfg.par ? (ones + smp[9].v) % 2 !== (cfg.par === 'even' ? 0 : 1) : false;
+        out.push({ s: s, smp: smp, byte: byte, perr: perr, ferr: smp[rl - 1].v !== 1, end: smp[rl - 1].t });
+        g = smp[rl - 1].t;
+      }
+      return out;
+    }
+
+    function rebuild() {
+      chars = Array.prototype.map.call(cfg.text, function (ch) {
+        var c = ch.charCodeAt(0), b = [{ v: 0, kind: 'start', name: 'S' }], ones = 0, j;
+        for (j = 0; j < 8; j++) { var v = (c >> j) & 1; ones += v; b.push({ v: v, kind: 'data', name: 'D' + j, j: j }); }
+        if (cfg.par) b.push({ v: cfg.par === 'even' ? ones % 2 : 1 - ones % 2, kind: 'par', name: 'P' });
+        for (j = 0; j < cfg.stop; j++) b.push({ v: 1, kind: 'stop', name: cfg.stop > 1 ? 'SP' + (j + 1) : 'SP' });
+        return { ch: ch, c: c, bits: b, ones: ones };
+      });
+      fl = chars[0].bits.length;
+      Fs = chars.map(function (x, k) { return 1 + k * (fl + 1); });
+      Gend = 1 + chars.length * (fl + 1);
+      rxr = cfg.baud / rxBaud();
+      rx = simulate();
+      Gfin = Math.max(Gend, rx.length ? rx[rx.length - 1].end + 0.2 : 0);
+      // dải cả chuỗi thu nhỏ
+      var d = '', prev = null, lab = '';
+      for (var g = 0; g < Gend; g++) {
+        var v = lvl(g + 0.5), y = v ? 234 : 248;
+        if (prev === null) d += 'M' + ox(g).toFixed(1) + ' ' + y; else if (prev !== v) d += 'V' + y;
+        d += 'H' + ox(g + 1).toFixed(1); prev = v;
+      }
+      chars.forEach(function (x, k) { lab += '<text class="np-ovt" x="' + ox(Fs[k] + fl / 2).toFixed(1) + '" y="229" text-anchor="middle">' + esc(x.ch === ' ' ? '␣' : x.ch) + '</text>'; });
+      el.ovw.setAttribute('d', d);
+      el.ovl.innerHTML = lab;
+      zk = -1;
+      buildSteps();
+    }
+
+    // Vẽ lại phần giản đồ phóng to cho khung của ký tự k
+    function buildZoom(k) {
+      zk = k;
+      var F = Fs[k], x = chars[k], bitUs = 1e6 / cfg.baud;
+      W0 = F - 1; P = WZ / (fl + 2);
+      var cell = function (a, b, label, cls, y) {
+        return '<rect class="np-fld ' + cls + '" x="' + (zx(a) + 1).toFixed(1) + '" y="' + y + '" width="' + Math.max(1, (b - a) * P - 2).toFixed(1) + '" height="22" rx="4"/>' +
+          '<text class="np-fldt" x="' + zx((a + b) / 2).toFixed(1) + '" y="' + (y + 15) + '" text-anchor="middle">' + label + '</text>';
+      };
+      var band = '<g>' + cell(W0, F, 'rảnh', 'is-idle', 262) + '</g>';
+      x.bits.forEach(function (b, i) { band += '<g>' + cell(F + i, F + i + 1, b.name, b.kind === 'data' ? '' : b.kind === 'par' ? 'is-ack' : 'is-ss', 262) + '</g>'; });
+      band += '<g>' + cell(F + fl, F + fl + 1, 'rảnh', 'is-idle', 262) + '</g>';
+      el.band.innerHTML = band;
+      bandRects = Array.prototype.slice.call(el.band.querySelectorAll('rect'));
+      // dạng sóng TX + giá trị từng bit
+      var d = '', prev = null, vals = '';
+      for (var g = W0; g < W0 + fl + 2; g++) {
+        var v = lvl(g + 0.5), y = v ? LANE[0] : LANE[1];
+        if (prev === null) d += 'M' + zx(g).toFixed(1) + ' ' + y; else if (prev !== v) d += 'V' + y;
+        d += 'H' + zx(g + 1).toFixed(1); prev = v;
+      }
+      x.bits.forEach(function (b, i) { vals += '<text class="np-wavet" x="' + zx(F + i + 0.5).toFixed(1) + '" y="313" text-anchor="middle">' + b.v + '</text>'; });
+      el.wave.setAttribute('d', d);
+      el.vals.innerHTML = vals;
+      // thước đo 1 bit (đặt trên start bit)
+      var xa = zx(F) + 3, xb = zx(F + 1) - 3;
+      el.dim.innerHTML = '<path class="np-dimln" d="M' + xa + ' 290 V298 M' + xa + ' 294 H' + xb + ' M' + xb + ' 290 V298"/>' +
+        '<text class="np-t-val" x="' + (xb + 9) + '" y="299">1 bit = ' + fmtT(bitUs) + '</text>';
+      // các lần bên nhận lấy mẫu + cách bên nhận chia khung (chỉ những gì nằm trong khung đang xem)
+      var W1 = W0 + fl + 2, sm = '', rb = '';
+      rx.forEach(function (f, fi) {
+        if (f.end < W0 - 0.5 || f.s > W1) return;
+        f.smp.forEach(function (s, si) {
+          if (s.t < W0 || s.t > W1) return;
+          var sx = zx(s.t).toFixed(1);
+          sm += '<g data-f="' + fi + '" data-s="' + si + '"><line class="np-sample" x1="' + sx + '" y1="306" x2="' + sx + '" y2="356"/>' +
+            '<circle class="np-sample-dot" cx="' + sx + '" cy="' + (s.v ? LANE[0] : LANE[1]) + '" r="3.5"/>' +
+            '<text class="np-rxv" x="' + sx + '" y="372" text-anchor="middle">' + s.v + '</text></g>';
+        });
+        f.smp.forEach(function (s, j) {            // mỗi ô hiện ra khi bên nhận bắt đầu đếm tới bit đó
+          var a = f.s + j * rxr, b = a + rxr, last = j === f.smp.length - 1;
+          var name = j === 0 ? 'S' : last ? 'SP' : cfg.par && j === 9 ? 'P' : (P * rxr >= 34 ? 'D' : '') + (j - 1);
+          var cls = j === 0 ? 'is-ss' : last ? (f.ferr ? 'is-nack' : 'is-ss') : cfg.par && j === 9 ? (f.perr ? 'is-nack' : 'is-ack') : '';
+          rb += '<g data-t="' + a + '">' + cell(a, b, name, cls, 382) + '</g>';
+        });
+      });
+      el.smp.innerHTML = sm;
+      el.rxb.innerHTML = rb;
+      smpEls = Array.prototype.map.call(el.smp.children, function (n) { return { el: n, t: rx[+n.dataset.f].smp[+n.dataset.s].t }; });
+      rxEls = Array.prototype.map.call(el.rxb.children, function (n) { return { el: n, t: Number(n.dataset.t) }; });
+      // trục thời gian: vạch mỗi bit, nhãn ở đầu và cuối khung
+      var tm = '';
+      for (var b2 = 0; b2 <= fl; b2++) tm += '<line class="np-grid" x1="' + zx(F + b2).toFixed(1) + '" y1="406" x2="' + zx(F + b2).toFixed(1) + '" y2="412"/>';
+      tm += '<text class="np-t-dim" x="' + zx(F).toFixed(1) + '" y="424" text-anchor="middle">0</text>' +
+        '<text class="np-t-dim" x="' + zx(F + fl).toFixed(1) + '" y="424" text-anchor="middle">' + fmtT(fl * bitUs) + '</text>';
+      el.time.innerHTML = tm;
+      el.hl.setAttribute('width', P);
+      el.ovwin.setAttribute('x', ox(W0).toFixed(1));
+      el.ovwin.setAttribute('width', ((fl + 2) * WZ / Gend).toFixed(1));
+    }
+
+    function along(f) {                   // điểm trên dây TX vàng: (240,96) → (330,96) → (430,150) → (520,150)
+      var d = f * 293.65;
+      if (d <= 90) return [240 + d, 96];
+      d -= 90;
+      if (d <= 113.65) return [330 + 100 * d / 113.65, 96 + 54 * d / 113.65];
+      return [430 + d - 113.65, 150];
+    }
+
+    function render() {
+      if (win !== zk) buildZoom(win);
+      var W1 = W0 + fl + 2, inWin = T >= W0 && T <= W1, x = zx(T);
+      el.cur.style.display = el.curtip.style.display = inWin ? '' : 'none';
+      el.cur.setAttribute('x1', x.toFixed(1)); el.cur.setAttribute('x2', x.toFixed(1));
+      el.curtip.setAttribute('points', (x - 6) + ',252 ' + (x + 6) + ',252 ' + x + ',260');
+      var cb = bitAt(T);
+      if (cb && cb.k === zk) { el.hl.style.display = ''; el.hl.setAttribute('x', zx(Fs[zk] + cb.i).toFixed(1)); } else el.hl.style.display = 'none';
+      var ci = Math.floor(T - W0);
+      bandRects.forEach(function (r, i) { r.classList.toggle('is-cur', inWin && ci === i); });
+      smpEls.forEach(function (o) { o.el.style.display = T >= o.t ? '' : 'none'; });
+      rxEls.forEach(function (o) { o.el.style.display = T >= o.t ? '' : 'none'; });
+      el.ovcur.setAttribute('x1', ox(Math.min(T, Gend)).toFixed(1)); el.ovcur.setAttribute('x2', ox(Math.min(T, Gend)).toFixed(1));
+
+      // chấm bit chạy trên dây TX trong suốt thời gian của bit
+      if (cb) {
+        var pt = along(T - Math.floor(T));
+        el.dot.style.display = '';
+        el.dot.setAttribute('transform', 'translate(' + pt[0].toFixed(1) + ' ' + pt[1].toFixed(1) + ')');
+        el.dot.querySelector('text').textContent = chars[cb.k].bits[cb.i].v;
+      } else el.dot.style.display = 'none';
+
+      // bên gửi: ký tự của khung đang xem
+      var cx = chars[zk];
+      el.ch.textContent = cx.ch === ' ' ? '␣' : cx.ch;
+      el.asc.textContent = 'ASCII ' + cx.c + ' · ' + hex2(cx.c);
+      el.bin.textContent = bin8(cx.c);
+      var curJ = cb && cb.k === zk && chars[zk].bits[cb.i].kind === 'data' ? chars[zk].bits[cb.i].j : -1;
+      seqEls.forEach(function (s, j) { s.textContent = cx.bits[1 + j].v; s.setAttribute('class', j === curJ ? 'is-cur' : ''); });
+
+      // bên nhận: các byte đã ghép xong + byte đang ghép
+      var got = '', cur = null, last = null;
+      rx.forEach(function (f) { if (f.end <= T) { got += shown(f.byte); last = f; } else if (f.s <= T) cur = f; });
+      el.term.textContent = got.slice(-15) + '▌';
+      if (cur) {
+        var bs = cur.smp.filter(function (s) { return s.j >= 1 && s.j <= 8 && s.t <= T; }).map(function (s) { return s.v; });
+        el.bst.textContent = bs.length ? 'đang ghép: ' + bs.join(' ')
+          : T >= cur.smp[0].t ? 'start bit = 0 ✓, chờ bit D0…' : 'thấy cạnh xuống, chờ giữa start bit…';
+      } else if (last) {
+        el.bst.textContent = 'nhận ' + hex2(last.byte) + ' ‘' + shown(last.byte) + '’ ' +
+          (last.ferr ? '✗ lỗi khung' : last.perr ? '✗ sai parity' : cfg.wrong ? '(tưởng là đúng)' : '✓');
+      } else el.bst.textContent = 'chờ cạnh xuống…';
+      el.bbaud.textContent = cfg.wrong ? 'nhận ' + rxBaud() + ' baud ✗ (lệch)' : 'nhận ' + cfg.baud + ' baud ✓';
+
+      // hai dòng trạng thái
+      if (cb) {
+        var b = chars[cb.k].bits[cb.i], who = qc(chars[cb.k]);
+        el.st1.textContent = 'TX = ' + b.v + ' · ' + (b.kind === 'start' ? 'start bit của ' + who
+          : b.kind === 'data' ? 'bit D' + b.j + ' của ' + who + (b.j === 0 ? ' (LSB đi trước)' : '')
+          : b.kind === 'par' ? 'bit parity (' + parName() + ') của ' + who : 'stop bit của ' + who);
+      } else el.st1.textContent = 'TX = 1 · ' + (T < 1 ? 'rảnh (idle high), chưa gửi gì' : T >= Gend ? 'rảnh, đã gửi xong' : 'nghỉ giữa hai ký tự, giữ mức 1');
+      el.st2.textContent = cfg.wrong
+        ? 'Bên gửi ' + cfg.baud + ' baud, bên nhận ' + rxBaud() + ' baud ✗ → bên nhận lấy mẫu lệch chỗ'
+        : cfg.baud + ' baud → 1 bit = ' + fmtT(1e6 / cfg.baud) + ' · khung ' + fmtName() + ' = ' + fl + ' bit = ' + fmtT(fl * 1e6 / cfg.baud);
+    }
+
+    var steps = [];
+    function buildSteps() {
+      var x = chars[0], F = Fs[0], B = cfg.baud, wr = cfg.wrong, n = chars.length, list = [], j;
+      var smpIn = function (a, b) { var v = []; rx.forEach(function (f) { f.smp.forEach(function (s) { if (s.t >= a && s.t < b) v.push(s.v); }); }); return v; };
+      var doneIn = function (a, b) {
+        var d = rx.filter(function (f) { return f.end >= a && f.end < b; }).map(function (f) {
+          return hex2(f.byte) + ' ‘' + shown(f.byte) + '’' + (f.ferr ? ' (lỗi khung)' : f.perr ? ' (sai parity)' : '');
+        });
+        return d.length ? ' Bên nhận ghép xong: ' + d.join(', ') + '.' : '';
+      };
+      var wrongBit = function (a) {
+        var s = smpIn(a, a + 1);
+        return (s.length ? ' Bên nhận đọc ' + s.length + ' lần trong bit này: ' + s.join(', ') + '.' : ' Bên nhận tưởng đã đọc xong một byte, đang chờ cạnh xuống mới — bỏ lỡ bit này.') + doneIn(a, a + 1);
+      };
+      var frameBits = function (c) {
+        return 'start 0, rồi ' + c.bits.filter(function (b) { return b.kind === 'data'; }).map(function (b) { return b.v; }).join(' ') +
+          (cfg.par ? ', parity ' + c.bits[9].v : '') + ', stop 1';
+      };
+      list.push({ t: [0, 1], tk: 0.5, w: 0, dur: 3000, text: 'Dây TX đang rảnh, giữ mức 1 (idle high). Không có dây clock: hai bên hẹn trước ' + B +
+        ' baud, tức mỗi bit dài ' + fmtT(1e6 / B) + '.' + (wr ? ' Nhưng bên nhận lại đặt ' + rxBaud() + ' baud — nhanh gấp đôi.' : '') });
+      list.push({ t: [F, F + 1], tk: F + 0.85, w: 0, dur: 3800, text: wr
+        ? 'Start bit: TX kéo xuống 0 trong 1 bit. Bên nhận thấy cạnh xuống nhưng tưởng 1 bit chỉ dài ' + fmtT(1e6 / rxBaud()) + ': nó lấy mẫu sau 1/4 bit, rồi cứ nửa bit lại đọc một lần.'
+        : 'Start bit: TX kéo xuống 0 trong đúng 1 bit. Bên nhận thấy cạnh xuống thì bắt đầu bấm giờ, đợi nửa bit rồi lấy mẫu giữa start bit — vẫn là 0, đúng là có ký tự tới.' });
+      for (j = 0; j < 8; j++) {
+        var a = F + 1 + j, v = x.bits[1 + j].v;
+        list.push({ t: [a, a + 1], tk: a + 0.85, w: 0, dur: j === 0 ? 4600 : 2400, text: 'Bit D' + j + ' = ' + v +
+          (j === 0 ? ' — bit thấp nhất (LSB) đi trước. ' + qc(x) + ' = ' + hex2(x.c) + ' = ' + bin8(x.c) + ', nên trên dây lần lượt là ' +
+            x.bits.slice(1, 9).map(function (b) { return b.v; }).join(' ') + '.' : '.') +
+          (wr ? wrongBit(a) : ' Bên nhận lấy mẫu đúng giữa bit, đọc được ' + v + '.') });
+      }
+      if (cfg.par) {
+        var p = x.bits[9].v;
+        list.push({ t: [F + 9, F + 10], tk: F + 9.85, w: 0, dur: 3600, text: 'Bit parity (' + parName() + ') = ' + p + ': ' + qc(x) + ' có ' + x.ones +
+          ' bit 1, thêm ' + p + ' để tổng số bit 1 thành số ' + parName() + '. Bên nhận đếm lại để phát hiện lỗi 1 bit.' + (wr ? wrongBit(F + 9) : '') });
+      }
+      var s0 = F + 9 + (cfg.par ? 1 : 0);
+      list.push({ t: [s0, F + fl], tk: F + fl - 0.15, w: 0, dur: 3600, text: (cfg.stop > 1 ? 'Hai stop bit = 1' : 'Stop bit = 1') + ': TX trở về mức 1. ' + (wr
+        ? 'Ký tự ' + qc(x) + ' đã gửi xong, nhưng bên nhận lệch nhịp nên hiểu sai hoàn toàn.' + doneIn(s0, F + fl)
+        : 'Bên nhận kiểm tra stop bit phải là 1, rồi ghép 8 bit thành ' + hex2(x.c) + ' = ' + qc(x) + ' ✓. Khung ' + fmtName() + ' tốn ' + fl + ' bit cho 1 byte, mất ' + fmtT(fl * 1e6 / B) + '.') });
+      for (var k = 1; k < n; k++) {
+        var c = chars[k];
+        list.push({ t: [Fs[k] - 1, Fs[k] + fl], tk: Fs[k] + fl - 0.15, w: k, dur: 4400, text: wr
+          ? qc(c) + ' = ' + hex2(c.c) + ' = ' + bin8(c.c) + '.' + (doneIn(Fs[k] - 1, Fs[k] + fl) || ' Bên nhận vẫn lệch nhịp, chưa ghép xong byte nào.')
+          : qc(c) + ' = ' + hex2(c.c) + ' = ' + bin8(c.c) + ' → trên dây: ' + frameBits(c) + '.' + (k === 1 ? ' Mỗi khung mở đầu bằng start bit, nên bên nhận được canh lại giờ cho từng ký tự.' : '') });
+      }
+      var got = rx.map(function (f) { return shown(f.byte); }).join('');
+      list.push({ t: [Fs[n - 1] + fl, Gfin], tk: Gfin, w: n - 1, dur: 4400, text: wr
+        ? 'Bên gửi gửi “' + cfg.text + '” nhưng bên nhận in ra “' + got + '” — dữ liệu rác vì lệch baud rate. Đặt hai bên cùng ' + B + ' baud là hết.'
+        : 'Xong: ' + n + ' khung × ' + fl + ' bit = ' + n * fl + ' bit, mất khoảng ' + fmtT(n * fl * 1e6 / B) + ' ở ' + B + ' baud. Bên nhận in ra “' + got +
+          '”. Giữa hai khung, dây nghỉ ở mức 1 bao lâu cũng được.' });
+      steps.length = 0;
+      list.forEach(function (s) { steps.push({ state: { t0: s.t[0], t1: s.t[1], tk: s.tk, w: s.w }, text: s.text, dur: s.dur }); });
+    }
+
+    var tryBox = h('div', 'np-try');
+    tryBox.innerHTML =
+      '<span class="np-try-label">Tự thử</span>' +
+      '<label class="np-field">Chuỗi <input class="np-input np-input--wide" data-in="s" value="THIEN" maxlength="8" spellcheck="false" autocomplete="off" aria-label="Chuỗi gửi qua UART, tối đa 8 ký tự ASCII"></label>' +
+      '<button type="button" class="np-btn" data-send>Gửi lại từ đầu</button>' +
+      '<div class="np-seg" role="group" aria-label="Baud rate">' +
+        [9600, 115200].map(function (b) { return '<button type="button" class="np-btn" data-baud="' + b + '">' + b + ' baud</button>'; }).join('') + '</div>' +
+      '<span class="np-err" data-err role="alert"></span>' +
+      '<span class="np-modeinfo" data-ascii></span>';
+    var frBox = h('div', 'np-try');
+    frBox.innerHTML =
+      '<span class="np-try-label">Khung</span>' +
+      '<div class="np-seg" role="group" aria-label="Parity">' +
+        [['', 'Không parity'], ['even', 'Parity chẵn'], ['odd', 'Parity lẻ']].map(function (p) { return '<button type="button" class="np-btn" data-par="' + p[0] + '">' + p[1] + '</button>'; }).join('') + '</div>' +
+      '<div class="np-seg" role="group" aria-label="Số stop bit">' +
+        [1, 2].map(function (s) { return '<button type="button" class="np-btn" data-stop="' + s + '">' + s + ' stop bit</button>'; }).join('') + '</div>' +
+      '<button type="button" class="np-btn" data-wrong aria-pressed="false">Bên nhận sai baud rate</button>' +
+      '<span class="np-modeinfo" data-fmt></span>';
+
+    function sync() {
+      var each = function (box, sel, fn) { Array.prototype.forEach.call(box.querySelectorAll(sel), function (b) { b.setAttribute('aria-pressed', String(fn(b))); }); };
+      each(tryBox, '[data-baud]', function (b) { return Number(b.dataset.baud) === cfg.baud; });
+      each(frBox, '[data-par]', function (b) { return b.dataset.par === cfg.par; });
+      each(frBox, '[data-stop]', function (b) { return Number(b.dataset.stop) === cfg.stop; });
+      frBox.querySelector('[data-wrong]').setAttribute('aria-pressed', String(cfg.wrong));
+      tryBox.querySelector('[data-ascii]').textContent = chars.map(function (c) { return (c.ch === ' ' ? '␣' : c.ch) + ' ' + hex2(c.c); }).join(' · ');
+      frBox.querySelector('[data-fmt]').textContent = 'Khung ' + fmtName() + ' = ' + fl + ' bit · 1 bit = ' + fmtT(1e6 / cfg.baud) +
+        (cfg.wrong ? ' · bên nhận ' + rxBaud() + ' baud' : '');
+    }
+    function apply(s) {
+      t0 = s.t0; t1 = s.t1; tk = s.tk; win = s.w;
+      T = player && player.playing() ? t0 : tk;     // đang phát: chạy từ đầu bước; đang dừng: hiện thời điểm chính
+      render();
+    }
+    rebuild(); sync();
+    var player = null;
+    player = createPlayer(host, { steps: steps, apply: apply });
+    host.appendChild(tryBox);
+    host.appendChild(frBox);
+
+    function redo() { rebuild(); sync(); player.restart(); }
+    function send() {
+      var s = tryBox.querySelector('[data-in="s"]').value.trim(), err = tryBox.querySelector('[data-err]');
+      if (!/^[\x20-\x7E]{1,8}$/.test(s)) { err.textContent = 'Gõ 1–8 ký tự ASCII không dấu, vd. THIEN, OK, 42.'; return; }
+      err.textContent = '';
+      cfg.text = s;
+      redo();
+    }
+    tryBox.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-baud]');
+      if (b) { cfg.baud = Number(b.dataset.baud); redo(); }
+      if (e.target.closest('[data-send]')) send();
+    });
+    tryBox.querySelector('input').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+    frBox.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-par], [data-stop], [data-wrong]');
+      if (!b) return;
+      if (b.hasAttribute('data-par')) cfg.par = b.dataset.par;
+      else if (b.hasAttribute('data-stop')) cfg.stop = Number(b.dataset.stop);
+      else cfg.wrong = !cfg.wrong;
+      redo();
+    });
+
+    var raf = 0;
+    function frame() {
+      raf = requestAnimationFrame(frame);
+      if (!player.visible()) return;
+      var pr = player.progress();
+      var nt = !player.playing() && pr === 0 ? tk : t0 + (t1 - t0) * pr;
+      if (nt === T) return;
+      T = nt;
+      render();
+    }
+    raf = requestAnimationFrame(frame);
+    return { destroy: function () { cancelAnimationFrame(raf); player.destroy(); } };
+  }
+
   /* Danh sách sơ đồ: tên dùng trong data-np-diagram="…" */
-  var DIAGRAMS = { gpio: mountGpio, pull: mountPull, spi: mountSpi, i2c: mountI2c };
+  var DIAGRAMS = { gpio: mountGpio, pull: mountPull, spi: mountSpi, i2c: mountI2c, uart: mountUart };
 
   /* Ảnh minh họa nhỏ cho thẻ bài lớn ở trang nhất (theo mã bài) */
   var ART = {
@@ -1262,7 +1655,26 @@
       }).join('') +
       '<circle cx="360" cy="60" r="3.5" fill="var(--np-data)"/><circle cx="388" cy="84" r="3.5" fill="var(--np-clk)"/>' +
       '<text x="114" y="53" fill="var(--np-data)" font-family="var(--mono)" font-size="10" font-weight="700">SDA</text>' +
-      '<text x="114" y="78" fill="var(--np-clk)" font-family="var(--mono)" font-size="10" font-weight="700">SCL</text></svg>'
+      '<text x="114" y="78" fill="var(--np-clk)" font-family="var(--mono)" font-size="10" font-weight="700">SCL</text></svg>',
+    uart: (function () {
+      // khung UART của chữ T (0x54): rảnh, start, 8 bit LSB trước, stop, rảnh — mỗi bit 30px
+      var lv = [1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1], nm = ['', 'S', '0', '0', '1', '0', '1', '0', '1', '0', 'SP', ''], d = '', lab = '';
+      lv.forEach(function (v, i) {
+        var y = v ? 98 : 124, x = 30 + i * 30;
+        d += (i === 0 ? 'M' + x + ' ' + y : (lv[i - 1] !== v ? 'V' + y : '')) + 'H' + (x + 30);
+        if (nm[i]) lab += '<text x="' + (x + 15) + '" y="90" text-anchor="middle" fill="' + (i === 1 || i === 10 ? 'var(--primary)' : 'var(--text-muted)') + '" font-family="var(--mono)" font-size="10" font-weight="700">' + nm[i] + '</text>';
+      });
+      return '<svg viewBox="0 0 420 150" role="img" aria-label="Minh họa: hai thiết bị nối chéo TX và RX, bên dưới là khung UART của chữ T">' +
+        '<rect x="14" y="10" width="100" height="50" rx="10" fill="var(--scope-bg)"/><rect x="306" y="10" width="100" height="50" rx="10" fill="var(--scope-bg)"/>' +
+        '<text x="64" y="40" text-anchor="middle" fill="#e6edf3" font-family="var(--mono)" font-size="12" font-weight="600">ESP32</text>' +
+        '<text x="356" y="40" text-anchor="middle" fill="#4ade80" font-family="var(--mono)" font-size="12" font-weight="600">THIEN▌</text>' +
+        '<path d="M306 24H250L170 48H114" fill="none" stroke="var(--np-miso)" stroke-width="3" opacity="0.55"/>' +
+        '<path d="M114 24H170L250 48H306" fill="none" stroke="var(--np-data)" stroke-width="3"/>' +
+        '<text x="122" y="18" fill="var(--np-data)" font-family="var(--mono)" font-size="10" font-weight="700">TX</text>' +
+        '<text x="298" y="18" text-anchor="end" fill="var(--np-miso)" font-family="var(--mono)" font-size="10" font-weight="700">TX</text>' +
+        lab + '<path d="' + d + '" fill="none" stroke="var(--np-data)" stroke-width="3"/>' +
+        '<text x="210" y="144" text-anchor="middle" fill="var(--text-muted)" font-family="var(--mono)" font-size="10" font-weight="600">‘T’ = 0x54 · LSB đi trước</text></svg>';
+    })()
   };
 
   /* =========================================================

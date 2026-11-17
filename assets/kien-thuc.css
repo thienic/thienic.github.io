@@ -460,3 +460,17 @@ a.np-card:hover .np-card-title { color: var(--primary); }
 .np-svg .np-pulltag text { fill: var(--on-primary); font-size: 11px; }
 .np-svg .np-res { transition: stroke 0.2s; }
 .np-svg .np-res.is-on { stroke: var(--np-vcc); stroke-width: 2.6; }
+
+/* UART: ký tự lớn, màn hình bên nhận, chuỗi bit lên dây, dải cả chuỗi thu nhỏ, thước đo 1 bit */
+.np-svg .np-big { fill: var(--text); font-size: 32px; }
+.np-svg .np-term { fill: var(--scope-bg); stroke: var(--border-strong); stroke-width: 1; }
+.np-svg .np-term-t { fill: #4ade80; font-size: 16px; }
+.np-svg .np-uart-s { fill: var(--text-muted); font-size: 11px; }
+.np-svg .np-bitseq { fill: var(--text-muted); font-size: 13px; }
+.np-svg .np-bitseq .is-cur { fill: var(--primary); font-weight: 800; }
+.np-svg .np-fld.is-ss { fill: color-mix(in srgb, var(--primary) 14%, var(--surface)); }
+.np-svg .np-ovwin { fill: var(--primary-soft); stroke: var(--primary); stroke-width: 1.2; }
+.np-svg .np-ovt { fill: var(--text); font-size: 11px; }
+.np-svg .np-dimln { fill: none; stroke: var(--text-muted); stroke-width: 1.2; }
+.np-svg .np-rxv { fill: var(--np-miso); font-size: 11px; }
+.np-input--wide { width: 8.5em; }
